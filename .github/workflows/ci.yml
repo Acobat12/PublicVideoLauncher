@@ -50,7 +50,7 @@ jobs:
 
       - name: Build release assets (Windows)
         if: matrix.shell == 'pwsh'
-    shell: pwsh
+        shell: pwsh
         run: |
           .\build\release.ps1 -SelfContained -SkipSourceArchive -Version $env:APP_VERSION -Runtimes ($env:RUNTIMES -split ',')
         env:
