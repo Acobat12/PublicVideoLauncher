@@ -39,6 +39,17 @@ map_rpm_arch() {
   esac
 }
 
+map_nfpm_asset_arch() {
+  case "$1" in
+    x86_64|amd64) echo x86_64 ;;
+    aarch64|arm64) echo arm64 ;;
+    *)
+      echo "Unsupported host architecture for nFPM download: $1" >&2
+      return 1
+      ;;
+  esac
+}
+
 ensure_nfpm() {
   local nfpm_bin="$TOOLS_DIR/nfpm"
   if [[ -x "$nfpm_bin" ]]; then
@@ -48,17 +59,30 @@ ensure_nfpm() {
 
   local tmpdir
   tmpdir="$(mktemp -d)"
-  local arch="amd64"
-  if [[ "$HOST_ARCH" == "aarch64" || "$HOST_ARCH" == "arm64" ]]; then
-    arch="arm64"
-  fi
-  local archive="nfpm_${NFPM_VERSION}_Linux_${arch}.tar.gz"
+  trap 'rm -rf "$tmpdir"' RETURN
+
+  local asset_arch
+  asset_arch="$(map_nfpm_asset_arch "$HOST_ARCH")"
+
+  local archive="nfpm_${NFPM_VERSION}_Linux_${asset_arch}.tar.gz"
   local url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${archive}"
-  echo "Downloading nFPM ${NFPM_VERSION}..."
-  curl -fsSL "$url" -o "$tmpdir/$archive"
+
+  echo "Downloading nFPM ${NFPM_VERSION} from ${url}..."
+  curl -fL --retry 3 --retry-delay 2 "$url" -o "$tmpdir/$archive"
   tar -xzf "$tmpdir/$archive" -C "$tmpdir"
+
+  if [[ ! -f "$tmpdir/nfpm" ]]; then
+    echo "nFPM archive downloaded, but binary 'nfpm' was not found after extraction." >&2
+    return 1
+  fi
+
   install -m 0755 "$tmpdir/nfpm" "$nfpm_bin"
-  rm -rf "$tmpdir"
+
+  if [[ ! -x "$nfpm_bin" ]]; then
+    echo "nFPM was copied to $nfpm_bin but is not executable." >&2
+    return 1
+  fi
+
   echo "$nfpm_bin"
 }
 
@@ -66,6 +90,7 @@ ensure_appimagetool() {
   local rid="$1"
   local arch
   local url
+
   case "$rid" in
     linux-x64)
       arch="x86_64"
@@ -76,6 +101,7 @@ ensure_appimagetool() {
       url="https://github.com/AppImage/appimagetool/releases/download/${APPIMAGETOOL_TAG}/appimagetool-${arch}.AppImage"
       ;;
     *)
+      echo "Unsupported RID for appimagetool: $rid" >&2
       return 1
       ;;
   esac
@@ -83,9 +109,10 @@ ensure_appimagetool() {
   local bin="$TOOLS_DIR/appimagetool-${arch}.AppImage"
   if [[ ! -x "$bin" ]]; then
     echo "Downloading appimagetool ${APPIMAGETOOL_TAG} for ${arch}..."
-    curl -fsSL "$url" -o "$bin"
+    curl -fL --retry 3 --retry-delay 2 "$url" -o "$bin"
     chmod +x "$bin"
   fi
+
   echo "$bin"
 }
 
@@ -95,21 +122,25 @@ render_desktop_file() {
     -e "s#@APP_NAME@#${APP_NAME}#g" \
     -e "s#@EXECUTABLE@#public-video-launcher#g" \
     -e "s#@ICON_NAME@#PublicVideoLauncher#g" \
-    $BUILD_ASSETS_DIR/PublicVideoLauncher.desktop.in > "$destination"
+    "$BUILD_ASSETS_DIR/PublicVideoLauncher.desktop.in" > "$destination"
 }
 
 package_linux_runtime() {
   local rid="$1"
   local publish_dir="$PUBLISH_ROOT/$rid"
+
   if [[ ! -d "$publish_dir" ]]; then
-    echo "Skipping Linux native packages for $rid: $publish_dir not found"
+    echo "Skipping Linux native packages for ${rid}: ${publish_dir} not found"
     return 0
   fi
 
   local nfpm_bin
   nfpm_bin="$(ensure_nfpm)"
+
   local tmpdir
   tmpdir="$(mktemp -d)"
+  trap 'rm -rf "$tmpdir"' RETURN
+
   local desktop_file="$tmpdir/PublicVideoLauncher.desktop"
   render_desktop_file "$desktop_file"
 
@@ -173,23 +204,29 @@ YAML
   if [[ -n "$expected_host_arch" && "$HOST_ARCH" == "$expected_host_arch" ]]; then
     local appimagetool
     appimagetool="$(ensure_appimagetool "$rid")"
+
     local appdir="$APPDIR_ROOT/${rid}/${APP_NAME}.AppDir"
     rm -rf "$appdir"
     mkdir -p "$appdir/usr/bin"
+
     cp -R "$publish_dir"/. "$appdir/usr/bin"/
     install -m 0644 "$ICON_SOURCE" "$appdir/${APP_NAME}.png"
     install -m 0644 "$ICON_SOURCE" "$appdir/.DirIcon"
+
     render_desktop_file "$appdir/${APP_NAME}.desktop"
     sed -i 's#Exec=public-video-launcher %U#Exec=PublicVideoLauncher#' "$appdir/${APP_NAME}.desktop"
-    sed -i 's#Icon=PublicVideoLauncher#Icon=PublicVideoLauncher#' "$appdir/${APP_NAME}.desktop"
+
     sed -e "s#PublicVideoLauncher#${APP_NAME}#g" "$BUILD_ASSETS_DIR/AppRun.in" > "$appdir/AppRun"
-    chmod +x "$appdir/AppRun" "$appdir/usr/bin/PublicVideoLauncher"
+    chmod +x "$appdir/AppRun"
+
+    if [[ -f "$appdir/usr/bin/PublicVideoLauncher" ]]; then
+      chmod +x "$appdir/usr/bin/PublicVideoLauncher"
+    fi
+
     ARCH="$expected_host_arch" APPIMAGE_EXTRACT_AND_RUN=1 "$appimagetool" "$appdir" "$RELEASE_ROOT/${APP_NAME}-${VERSION}-${rid}.AppImage"
   else
-    echo "Skipping AppImage for $rid on host architecture $HOST_ARCH. Build it on a matching Linux runner to produce an AppImage."
+    echo "Skipping AppImage for ${rid} on host architecture ${HOST_ARCH}. Build it on a matching Linux runner to produce an AppImage."
   fi
-
-  rm -rf "$tmpdir"
 }
 
 if [[ "$#" -eq 0 ]]; then
@@ -199,6 +236,6 @@ fi
 for rid in "$@"; do
   case "$rid" in
     linux-*) package_linux_runtime "$rid" ;;
-    *) echo "Skipping non-Linux runtime $rid" ;;
+    *) echo "Skipping non-Linux runtime ${rid}" ;;
   esac
 done

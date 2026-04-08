@@ -18,7 +18,7 @@ if (-not $Runtimes -or $Runtimes.Count -eq 0) {
 foreach ($rid in $Runtimes) {
     $dir = Join-Path $PublishRoot $rid
     if (-not (Test-Path $dir)) {
-        Write-Host "Skipping $rid: $dir not found"
+        Write-Host "Skipping $($rid): $dir not found"
         continue
     }
 

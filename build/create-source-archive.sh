@@ -17,13 +17,14 @@ EXCLUDES=(
   --exclude='./.tools' --exclude='./.tools/*'
   --exclude='./.public-video-cache' --exclude='./.public-video-cache/*'
   --exclude='./.git' --exclude='./.git/*'
+  --exclude='./.vs' --exclude='./.vs/*'
 )
 
 tar -czf "$TAR_OUT" "${EXCLUDES[@]}" .
 echo "Created $TAR_OUT"
 
 if command -v zip >/dev/null 2>&1; then
-  zip -qr "$ZIP_OUT" . -x 'bin/*' 'obj/*' 'artifacts/*' '.tools/*' '.public-video-cache/*' '.git/*'
+  zip -qr "$ZIP_OUT" . -x 'bin/*' 'obj/*' 'artifacts/*' '.tools/*' '.public-video-cache/*' '.git/*' '.vs/*'
 else
   ZIP_OUT="$ZIP_OUT" python3 - <<'PY2'
 import os

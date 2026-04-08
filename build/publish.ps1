@@ -3,28 +3,53 @@ param(
     [switch]$SelfContained,
     [switch]$SingleFile,
     [string]$Configuration = 'Release',
-    [string]$Project = 'PublicVideoLauncher.csproj',
+    [string]$Version = '1.0.0',
     [string]$OutputRoot = 'artifacts/publish',
-    [string]$Version = '1.0.0'
+    [string]$ProjectPath = 'PublicVideoLauncher.csproj'
 )
 
 $ErrorActionPreference = 'Stop'
 
+$projectFullPath = Join-Path (Get-Location) $ProjectPath
+$outputFullRoot = Join-Path (Get-Location) $OutputRoot
+
+New-Item -ItemType Directory -Force -Path $outputFullRoot | Out-Null
+
 foreach ($rid in $Runtimes) {
-    $output = Join-Path $OutputRoot $rid
-    $args = @('publish', $Project, '-c', $Configuration, '-r', $rid, '-o', $output, '-p:Version=' + $Version)
+    $publishDir = Join-Path $outputFullRoot $rid
+    New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
+
+    Write-Host "Publishing $rid -> $publishDir"
+
+    $args = @(
+        'publish'
+        $projectFullPath
+        '-c'
+        $Configuration
+        '-r'
+        $rid
+        '-o'
+        $publishDir
+        "-p:Version=$Version"
+        '-p:DOTNET_CLI_DISABLE_PUBLISH_AND_PACK_RELEASE=true'
+    )
 
     if ($SelfContained) {
-        $args += @('--self-contained', 'true')
+        $args += '--self-contained'
+        $args += 'true'
     }
     else {
-        $args += @('--self-contained', 'false')
+        $args += '--self-contained'
+        $args += 'false'
     }
 
     if ($SingleFile) {
         $args += '-p:PublishSingleFile=true'
+        $args += '-p:IncludeNativeLibrariesForSelfExtract=true'
     }
 
-    Write-Host "Publishing $rid -> $output"
     & dotnet @args
+    if ($LASTEXITCODE -ne 0) {
+        throw "dotnet publish failed for $rid"
+    }
 }
