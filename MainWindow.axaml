@@ -151,13 +151,20 @@
             BorderBrush="#24324B"
             Background="#0B1220">
       <Grid RowDefinitions="Auto,*" RowSpacing="8">
-        <Grid Grid.Row="0" ColumnDefinitions="260,100,220,220,120,*" ColumnSpacing="10">
+        <Grid x:Name="DetailedHeaderGrid" Grid.Row="0" ColumnDefinitions="260,100,220,220,120,*" ColumnSpacing="10">
           <TextBlock Grid.Column="0" Text="Title" FontWeight="Bold" Foreground="#7DD3FC"/>
           <TextBlock Grid.Column="1" Text="Ext" FontWeight="Bold" Foreground="#7DD3FC"/>
           <TextBlock Grid.Column="2" Text="Playback" FontWeight="Bold" Foreground="#7DD3FC"/>
           <TextBlock Grid.Column="3" Text="Translation" FontWeight="Bold" Foreground="#7DD3FC"/>
           <TextBlock Grid.Column="4" Text="Cache" FontWeight="Bold" Foreground="#7DD3FC"/>
           <TextBlock Grid.Column="5" Text="Path" FontWeight="Bold" Foreground="#7DD3FC"/>
+        </Grid>
+
+        <Grid x:Name="SimpleHeaderGrid" Grid.Row="0" ColumnDefinitions="260,100,340,*" ColumnSpacing="10" IsVisible="False">
+          <TextBlock Grid.Column="0" Text="Title" FontWeight="Bold" Foreground="#7DD3FC"/>
+          <TextBlock Grid.Column="1" Text="Ext" FontWeight="Bold" Foreground="#7DD3FC"/>
+          <TextBlock Grid.Column="2" Text="Playback" FontWeight="Bold" Foreground="#7DD3FC"/>
+          <TextBlock Grid.Column="3" Text="Path" FontWeight="Bold" Foreground="#7DD3FC"/>
         </Grid>
 
         <ListBox x:Name="VideosListBox"
@@ -172,13 +179,22 @@
                       BorderThickness="1"
                       BorderBrush="#20304A"
                       Background="#101A31">
-                <Grid ColumnDefinitions="260,100,220,220,120,*" ColumnSpacing="10">
-                  <TextBlock Grid.Column="0" Text="{Binding Title}" FontWeight="Bold" TextWrapping="Wrap"/>
-                  <TextBlock Grid.Column="1" Text="{Binding Extension}"/>
-                  <TextBlock Grid.Column="2" Text="{Binding PlaybackUrl}" Foreground="#60A5FA" TextTrimming="CharacterEllipsis"/>
-                  <TextBlock Grid.Column="3" Text="{Binding TranslationUrl}" Foreground="#86EFAC" TextTrimming="CharacterEllipsis"/>
-                  <TextBlock Grid.Column="4" Text="{Binding CacheState}" Foreground="#FDE047"/>
-                  <TextBlock Grid.Column="5" Text="{Binding FullPath}" Foreground="#93C5FD" TextTrimming="CharacterEllipsis"/>
+                <Grid>
+                  <Grid ColumnDefinitions="260,100,220,220,120,*" ColumnSpacing="10" IsVisible="{Binding ShowProxyColumns}">
+                    <TextBlock Grid.Column="0" Text="{Binding Title}" FontWeight="Bold" TextWrapping="Wrap"/>
+                    <TextBlock Grid.Column="1" Text="{Binding Extension}"/>
+                    <TextBlock Grid.Column="2" Text="{Binding PlaybackUrl}" Foreground="#60A5FA" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Column="3" Text="{Binding TranslationUrl}" Foreground="#86EFAC" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Column="4" Text="{Binding CacheState}" Foreground="#FDE047"/>
+                    <TextBlock Grid.Column="5" Text="{Binding FullPath}" Foreground="#93C5FD" TextTrimming="CharacterEllipsis"/>
+                  </Grid>
+
+                  <Grid ColumnDefinitions="260,100,340,*" ColumnSpacing="10" IsVisible="{Binding ShowSimpleColumns}">
+                    <TextBlock Grid.Column="0" Text="{Binding Title}" FontWeight="Bold" TextWrapping="Wrap"/>
+                    <TextBlock Grid.Column="1" Text="{Binding Extension}"/>
+                    <TextBlock Grid.Column="2" Text="{Binding PlaybackUrl}" Foreground="#60A5FA" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock Grid.Column="3" Text="{Binding FullPath}" Foreground="#93C5FD" TextTrimming="CharacterEllipsis"/>
+                  </Grid>
                 </Grid>
               </Border>
             </DataTemplate>

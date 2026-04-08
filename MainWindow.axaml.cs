@@ -33,6 +33,8 @@ public partial class MainWindow : Window
     private readonly NumericUpDown _portNumeric;
     private readonly CheckBox _proxyModeCheckBox;
     private readonly CheckBox _autostartBrowserCheckBox;
+    private readonly Grid _detailedHeaderGrid;
+    private readonly Grid _simpleHeaderGrid;
     private readonly ListBox _videosListBox;
     private readonly TextBox _logTextBox;
     private readonly TextBox _publicUrlTextBox;
@@ -64,6 +66,8 @@ public partial class MainWindow : Window
         _portNumeric = this.FindControl<NumericUpDown>("PortNumeric")!;
         _proxyModeCheckBox = this.FindControl<CheckBox>("ProxyModeCheckBox")!;
         _autostartBrowserCheckBox = this.FindControl<CheckBox>("AutostartBrowserCheckBox")!;
+        _detailedHeaderGrid = this.FindControl<Grid>("DetailedHeaderGrid")!;
+        _simpleHeaderGrid = this.FindControl<Grid>("SimpleHeaderGrid")!;
         _videosListBox = this.FindControl<ListBox>("VideosListBox")!;
         _logTextBox = this.FindControl<TextBox>("LogTextBox")!;
         _publicUrlTextBox = this.FindControl<TextBox>("PublicUrlTextBox")!;
@@ -219,7 +223,7 @@ public partial class MainWindow : Window
             AppendLog("Videos found: " + _workspace.Entries.Count);
             AppendLog(_proxyModeCheckBox.IsChecked == true
                 ? "Proxy translation mode is ON. Non-MP4 files get playable MP4 + translation proxy MP4."
-                : "Proxy translation mode is OFF. Translation source will match playback source.");
+                : "Proxy translation mode is OFF. Non-MP4 files are published as-is with no conversion.");
 
             SetStatus("Ready");
             SetSummary(_workspace.Entries.Count > 0
@@ -389,6 +393,10 @@ public partial class MainWindow : Window
 
     private void RenderVideos()
     {
+        var showDetailed = _workspace.ProxyTranslationEnabled;
+        _detailedHeaderGrid.IsVisible = showDetailed;
+        _simpleHeaderGrid.IsVisible = !showDetailed;
+
         _videoItems.Clear();
         foreach (var entry in _workspace.Entries)
             _videoItems.Add(entry);

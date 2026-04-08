@@ -1,13 +1,18 @@
-PublicVideoLauncher patch notes
+PublicVideoLauncher v1.0.1 patch notes
 
 Changes applied:
-1. Fast failure when cloudflared exits before a public URL is produced.
-2. Optional selected-video startup restored for the GUI:
-   - if a video is selected in the list, the generated public URL starts with that file.
-3. Public URL is copied to clipboard automatically after successful start.
-4. Clear log message when requested port is busy and a fallback port is used.
-5. Safer temporary asset download naming for cloudflared downloads.
+1. Fixed Proxy MP4 mode behavior.
+   - When Proxy MP4 for translation is OFF, non-MP4 files are now published as-is.
+   - No playback conversion runs in OFF mode.
+   - Translation source matches the original playback source in OFF mode.
+2. Simplified the video table in OFF mode.
+   - Translation and Cache columns are hidden when proxy conversion is disabled.
+   - This reduces false expectations for AVI/MKV/MOV files that may not be translatable without MP4 proxying.
+3. Improved initial scan state handling.
+   - Non-MP4 files no longer show misleading Pending cache states when proxy conversion is disabled.
+4. Clearer scan log message.
+   - OFF mode now explicitly says that non-MP4 files are published as-is with no conversion.
+5. Release notes guidance updated for a cleaner app-first workflow.
 
 Notes:
-- This environment did not include the .NET SDK, so the patch is based on static code inspection rather than a local build.
-- The player currently writes translateSrc/originalSrc metadata into playlist.json, but player.html still plays src only.
+- This patch is based on source editing only. A local .NET build was not available in this environment.

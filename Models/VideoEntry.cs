@@ -21,14 +21,24 @@ public sealed class VideoEntry : INotifyPropertyChanged
 
     public string? PlaybackCachePath { get; set; }
     public string? TranslationCachePath { get; set; }
+    public bool ProxyModeEnabled { get; set; }
 
     public bool IsDirectMp4 => string.Equals(Extension, ".mp4", StringComparison.OrdinalIgnoreCase);
     public bool UsesProxyForTranslation =>
         !string.IsNullOrWhiteSpace(TranslationCachePath) &&
         !string.Equals(PlaybackUrl, TranslationUrl, StringComparison.OrdinalIgnoreCase);
 
-    public string PlaybackKind => IsDirectMp4 ? "Direct MP4" : "Playable cache MP4";
-    public string TranslationKind => UsesProxyForTranslation ? "Audio proxy MP4" : "Same as playback";
+    public bool UsesAnyCache => !string.IsNullOrWhiteSpace(PlaybackCachePath) || !string.IsNullOrWhiteSpace(TranslationCachePath);
+    public bool ShowProxyColumns => ProxyModeEnabled;
+    public bool ShowSimpleColumns => !ProxyModeEnabled;
+
+    public string PlaybackKind => IsDirectMp4
+        ? "Direct MP4"
+        : (UsesAnyCache ? "Playable cache MP4" : "Original file");
+
+    public string TranslationKind => UsesProxyForTranslation
+        ? "Audio proxy MP4"
+        : (ProxyModeEnabled ? "Same as playback" : "Translation proxy disabled");
 
     public string CacheState
     {

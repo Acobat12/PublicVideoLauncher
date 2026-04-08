@@ -31,7 +31,8 @@ public sealed class VideoWorkspace
         ProxyTranslationEnabled = proxyTranslationEnabled;
         Entries.Clear();
 
-        Directory.CreateDirectory(CacheFolder!);
+        if (proxyTranslationEnabled)
+            Directory.CreateDirectory(CacheFolder!);
 
         var usedSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -72,10 +73,11 @@ public sealed class VideoWorkspace
                 FullPath = file,
                 Extension = ext,
                 OriginalUrl = originalUrl,
-                PlaybackUrl = isDirectMp4 ? originalUrl : playbackUrl,
-                TranslationUrl = isDirectMp4 ? originalUrl : (proxyTranslationEnabled ? proxyUrl : playbackUrl),
-                PlaybackCachePath = isDirectMp4 ? null : playbackCachePath,
-                TranslationCachePath = isDirectMp4 ? null : (proxyTranslationEnabled ? proxyCachePath : null),
+                PlaybackUrl = isDirectMp4 || !proxyTranslationEnabled ? originalUrl : playbackUrl,
+                TranslationUrl = isDirectMp4 || !proxyTranslationEnabled ? originalUrl : proxyUrl,
+                PlaybackCachePath = isDirectMp4 || !proxyTranslationEnabled ? null : playbackCachePath,
+                TranslationCachePath = isDirectMp4 || !proxyTranslationEnabled ? null : proxyCachePath,
+                ProxyModeEnabled = proxyTranslationEnabled,
                 CacheState = GetInitialCacheState(file, playbackCachePath, isDirectMp4, proxyTranslationEnabled, proxyCachePath)
             };
 
@@ -87,6 +89,9 @@ public sealed class VideoWorkspace
     {
         if (isDirectMp4)
             return "Not needed";
+
+        if (!proxyEnabled)
+            return "Disabled";
 
         var sourceInfo = new FileInfo(sourcePath);
         var playbackReady = File.Exists(playbackCachePath) && new FileInfo(playbackCachePath).Length > 0 && new FileInfo(playbackCachePath).LastWriteTimeUtc >= sourceInfo.LastWriteTimeUtc;
