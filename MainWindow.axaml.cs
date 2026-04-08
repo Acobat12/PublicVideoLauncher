@@ -283,8 +283,20 @@ public partial class MainWindow : Window
             AppendLog("caddy: " + tools.CaddyPath);
             AppendLog("cloudflared: " + tools.CloudflaredPath);
 
-            AppendLog("Preparing playable / translation caches...");
-            await _ffmpegService.EnsureCachesAsync(tools.FfmpegPath, _workspace.Entries, AppendLog, _runCts.Token);
+            var entriesRequiringCache = _workspace.Entries
+                .Where(x => !string.IsNullOrWhiteSpace(x.PlaybackCachePath) || !string.IsNullOrWhiteSpace(x.TranslationCachePath))
+                .ToList();
+
+            if (entriesRequiringCache.Count > 0)
+            {
+                AppendLog("Preparing playable / translation caches...");
+                await _ffmpegService.EnsureCachesAsync(tools.FfmpegPath, entriesRequiringCache, AppendLog, _runCts.Token);
+            }
+            else
+            {
+                AppendLog("No cache preparation required for current mode.");
+            }
+
             RenderVideos();
 
             AppendLog("Writing playlist.json and player.html...");
