@@ -144,14 +144,13 @@ package_linux_runtime() {
   local desktop_file="$tmpdir/PublicVideoLauncher.desktop"
   render_desktop_file "$desktop_file"
 
-  local deb_arch rpm_arch
-  deb_arch="$(map_deb_arch "$rid")"
-  rpm_arch="$(map_rpm_arch "$rid")"
+  local pkg_arch
+  pkg_arch="$(map_deb_arch "$rid")"
   local config_file="$tmpdir/nfpm.yaml"
 
   cat > "$config_file" <<YAML
 name: "${PACKAGE_NAME}"
-arch: "${deb_arch}"
+arch: "${pkg_arch}"
 platform: linux
 version: "${VERSION}"
 section: video
@@ -177,14 +176,12 @@ contents:
     dst: "/usr/share/icons/hicolor/256x256/apps/PublicVideoLauncher.png"
 overrides:
   deb:
-    arch: "${deb_arch}"
     depends:
       - libx11-6
       - libice6
       - libsm6
       - libfontconfig1
   rpm:
-    arch: "${rpm_arch}"
     depends:
       - libX11
       - libICE
@@ -192,8 +189,8 @@ overrides:
       - fontconfig
 YAML
 
-  "$nfpm_bin" package --config "$config_file" --packager deb --target "$RELEASE_ROOT/${PACKAGE_NAME}_${VERSION}_${deb_arch}.deb"
-  "$nfpm_bin" package --config "$config_file" --packager rpm --target "$RELEASE_ROOT/${PACKAGE_NAME}-${VERSION}-1.${rpm_arch}.rpm"
+  "$nfpm_bin" package --config "$config_file" --packager deb --target "$RELEASE_ROOT/${PACKAGE_NAME}_${VERSION}_${pkg_arch}.deb"
+  "$nfpm_bin" package --config "$config_file" --packager rpm --target "$RELEASE_ROOT/${PACKAGE_NAME}-${VERSION}-1.$(map_rpm_arch "$rid").rpm"
 
   local expected_host_arch=""
   case "$rid" in

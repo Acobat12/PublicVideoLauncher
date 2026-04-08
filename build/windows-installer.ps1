@@ -53,13 +53,15 @@ foreach ($rid in $Runtimes) {
         continue
     }
 
+    $resolvedPublishDir = (Resolve-Path $publishDir).Path
+
     $tempDir = Join-Path ([IO.Path]::GetTempPath()) ("pvl-installer-" + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
 
     try {
         $scriptPath = Join-Path $tempDir "$AppName-$rid.iss"
         $outputBasename = "$AppName-$Version-$rid-setup"
-        $escapedPublish = $publishDir.Replace('\', '\\')
+        $escapedPublish = $resolvedPublishDir.Replace('\', '\\')
         $escapedOutput = (Resolve-Path $OutputRoot).Path.Replace('\', '\\')
         $content = Get-Content -Raw -Path $template
         $content = $content.Replace('@APP_NAME@', $AppName)
