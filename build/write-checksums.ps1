@@ -4,14 +4,19 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
 $directory = Split-Path -Parent $OutputFile
-if ([string]::IsNullOrWhiteSpace($directory)) { $directory = '.' }
+if ([string]::IsNullOrWhiteSpace($directory)) {
+    $directory = '.'
+}
+
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
 Set-Content -Path $OutputFile -Value $null
 
 $files = foreach ($target in $Targets) {
     if (Test-Path $target) {
-        Get-ChildItem -Path $target -File -Recurse | Where-Object { $_.Name -ne 'SHA256SUMS.txt' }
+        Get-ChildItem -Path $target -File -Recurse |
+            Where-Object { $_.Name -ne 'SHA256SUMS.txt' }
     }
 }
 

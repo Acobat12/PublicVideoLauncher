@@ -14,7 +14,7 @@ New-Item -ItemType Directory -Path $OutputRoot -Force | Out-Null
 
 function Get-IsccPath {
     $candidates = @(
-        "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+        "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
         "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
     )
 
@@ -49,7 +49,7 @@ foreach ($rid in $Runtimes) {
 
     $publishDir = Join-Path $PublishRoot $rid
     if (-not (Test-Path $publishDir)) {
-        Write-Host "Skipping $rid: $publishDir not found"
+        Write-Host "Skipping $($rid): $publishDir not found"
         continue
     }
 
@@ -69,8 +69,13 @@ foreach ($rid in $Runtimes) {
         $content = $content.Replace('@APP_ID@', "$AppId.$rid")
         $content = $content.Replace('@PUBLISH_DIR@', $escapedPublish)
         $content = $content.Replace('@OUTPUT_DIR@', $escapedOutput)
+
         $architectureAllowed = if ($rid -eq 'win-arm64') { 'arm64' } else { 'x64compatible' }
+
         $content = $content.Replace('@OUTPUT_BASENAME@', $outputBasename)
+        $content = $content.Replace('@ARCH_ALLOWED@', $architectureAllowed)
+        $content = $content.Replace('@ARCH_INSTALL_MODE@', $architectureAllowed)
+
         if (Test-Path $setupIcon) {
             $escapedSetupIcon = (Resolve-Path $setupIcon).Path.Replace('\', '\\')
             $content = $content.Replace('@SETUP_ICON_LINE@', "SetupIconFile=$escapedSetupIcon")
@@ -78,11 +83,14 @@ foreach ($rid in $Runtimes) {
         else {
             $content = $content.Replace('@SETUP_ICON_LINE@', '')
         }
-        $content = $content.Replace('@ARCH_ALLOWED@', $architectureAllowed)
-        $content = $content.Replace('@ARCH_INSTALL_MODE@', $architectureAllowed)
+
         Set-Content -Path $scriptPath -Value $content -Encoding UTF8
 
         & $iscc $scriptPath
+        if ($LASTEXITCODE -ne 0) {
+            throw "ISCC failed for $rid"
+        }
+
         Write-Host "Built installer for $rid"
     }
     finally {

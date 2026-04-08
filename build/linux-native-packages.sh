@@ -67,7 +67,7 @@ ensure_nfpm() {
   local archive="nfpm_${NFPM_VERSION}_Linux_${asset_arch}.tar.gz"
   local url="https://github.com/goreleaser/nfpm/releases/download/v${NFPM_VERSION}/${archive}"
 
-  echo "Downloading nFPM ${NFPM_VERSION} from ${url}..."
+  echo "Downloading nFPM ${NFPM_VERSION} from ${url}..." >&2
   curl -fL --retry 3 --retry-delay 2 "$url" -o "$tmpdir/$archive"
   tar -xzf "$tmpdir/$archive" -C "$tmpdir"
 
@@ -108,7 +108,7 @@ ensure_appimagetool() {
 
   local bin="$TOOLS_DIR/appimagetool-${arch}.AppImage"
   if [[ ! -x "$bin" ]]; then
-    echo "Downloading appimagetool ${APPIMAGETOOL_TAG} for ${arch}..."
+    echo "Downloading appimagetool ${APPIMAGETOOL_TAG} for ${arch}..." >&2
     curl -fL --retry 3 --retry-delay 2 "$url" -o "$bin"
     chmod +x "$bin"
   fi
