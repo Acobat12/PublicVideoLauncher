@@ -1,0 +1,173 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (example: 1.2.3)'
+        required: true
+        default: '1.0.0'
+      create_github_release:
+        description: 'Create/update a GitHub release'
+        required: true
+        default: true
+        type: boolean
+
+jobs:
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      create_release: ${{ steps.version.outputs.create_release }}
+    steps:
+      - id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            TAG="${GITHUB_REF_NAME}"
+            VERSION="${TAG#v}"
+            CREATE_RELEASE=true
+          else
+            VERSION="${{ inputs.version }}"
+            TAG="v$VERSION"
+            CREATE_RELEASE="${{ inputs.create_github_release }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "create_release=$CREATE_RELEASE" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            shell: pwsh
+            runtimes: win-x64,win-arm64
+          - os: ubuntu-latest
+            shell: bash
+            runtimes: linux-x64 linux-arm64
+          - os: macos-latest
+            shell: bash
+            runtimes: osx-x64 osx-arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      APP_NAME: PublicVideoLauncher
+      APP_VERSION: ${{ needs.resolve-version.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+          global-json-file: global.json
+
+      - name: Restore
+        run: dotnet restore PublicVideoLauncher.csproj
+
+      - name: Test
+        run: dotnet test tests/PublicVideoLauncher.Tests/PublicVideoLauncher.Tests.csproj -c Release --no-restore
+
+      - name: Install Inno Setup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe") -and -not (Get-Command ISCC.exe -ErrorAction SilentlyContinue)) {
+            winget install --id JRSoftware.InnoSetup -e -s winget --accept-package-agreements --accept-source-agreements --silent --disable-interactivity
+          }
+
+      - name: Build release assets (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\build\release.ps1 -SelfContained -SkipSourceArchive -Version $env:APP_VERSION -Runtimes ($env:RUNTIMES -split ',')
+        env:
+          RUNTIMES: ${{ matrix.runtimes }}
+
+      - name: Build release assets (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          chmod +x build/*.sh build/assets/*.sh
+          CREATE_SOURCE_ARCHIVE=true \
+          CREATE_LINUX_NATIVE_PACKAGES=true \
+          VERSION="$APP_VERSION" \
+          SELF_CONTAINED=true \
+          ./build/release.sh $RUNTIMES
+        env:
+          RUNTIMES: ${{ matrix.runtimes }}
+
+      - name: Build release assets (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          RUNTIMES: ${{ matrix.runtimes }}
+          APPLE_SIGN_IDENTITY: ${{ secrets.APPLE_SIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_CERT_BASE64: ${{ secrets.APPLE_CERT_BASE64 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          SIGN_MACOS_APP: ${{ secrets.APPLE_SIGN_IDENTITY != '' && secrets.APPLE_ID != '' && secrets.APPLE_APP_PASSWORD != '' && secrets.APPLE_TEAM_ID != '' && secrets.APPLE_CERT_BASE64 != '' && secrets.APPLE_CERT_PASSWORD != '' }}
+        run: |
+          chmod +x build/*.sh build/assets/*.sh
+          CREATE_SOURCE_ARCHIVE=false \
+          CREATE_MACOS_APP_BUNDLES=true \
+          VERSION="$APP_VERSION" \
+          SELF_CONTAINED=true \
+          ./build/release.sh $RUNTIMES
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-${{ runner.os }}-${{ env.APP_VERSION }}
+          path: |
+            artifacts/releases
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload source archives
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP_NAME }}-source-${{ env.APP_VERSION }}
+          path: |
+            artifacts/source
+          if-no-files-found: ignore
+          retention-days: 14
+
+  github-release:
+    needs: [resolve-version, build]
+    if: needs.resolve-version.outputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: PublicVideoLauncher-*
+          merge-multiple: true
+          path: collected
+
+      - name: Generate consolidated checksums
+        shell: bash
+        run: |
+          : > collected/SHA256SUMS.txt
+          find collected -type f ! -name 'SHA256SUMS.txt' -print0 | sort -z | while IFS= read -r -d '' file; do
+            sha256sum "$file" | awk -v rel="${file#collected/}" '{print tolower($1) "  " rel}' >> collected/SHA256SUMS.txt
+          done
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.resolve-version.outputs.tag }}
+          name: PublicVideoLauncher ${{ needs.resolve-version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            collected/**/*

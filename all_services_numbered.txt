@@ -1,0 +1,1301 @@
+===== FfmpegService.cs
+     1	using PublicVideoLauncher.Models;
+     2	using System;
+     3	using System.Collections.Generic;
+     4	using System.Diagnostics;
+     5	using System.IO;
+     6	using System.Threading;
+     7	using System.Threading.Tasks;
+     8	
+     9	namespace PublicVideoLauncher.Services;
+    10	
+    11	public sealed class FfmpegService
+    12	{
+    13	    public async Task EnsureCachesAsync(
+    14	        string ffmpegPath,
+    15	        IReadOnlyList<VideoEntry> entries,
+    16	        Action<string> log,
+    17	        CancellationToken cancellationToken)
+    18	    {
+    19	        foreach (var entry in entries)
+    20	        {
+    21	            cancellationToken.ThrowIfCancellationRequested();
+    22	
+    23	            if (entry.IsDirectMp4)
+    24	            {
+    25	                entry.CacheState = "Not needed";
+    26	                continue;
+    27	            }
+    28	
+    29	            if (string.IsNullOrWhiteSpace(entry.PlaybackCachePath))
+    30	                throw new InvalidOperationException($"Playback cache path is missing for {entry.FileName}");
+    31	
+    32	            if (NeedsRebuild(entry.FullPath, entry.PlaybackCachePath))
+    33	            {
+    34	                entry.CacheState = "Converting playback";
+    35	                log($"Creating playable MP4: {entry.FileName}");
+    36	                await ConvertToPlaybackMp4Async(ffmpegPath, entry.FullPath, entry.PlaybackCachePath, cancellationToken);
+    37	            }
+    38	            else
+    39	            {
+    40	                log($"Using playable MP4 cache: {Path.GetFileName(entry.PlaybackCachePath)}");
+    41	            }
+    42	
+    43	            if (!string.IsNullOrWhiteSpace(entry.TranslationCachePath))
+    44	            {
+    45	                if (NeedsRebuild(entry.FullPath, entry.TranslationCachePath))
+    46	                {
+    47	                    entry.CacheState = "Building translation proxy";
+    48	                    log($"Creating proxy MP4 for translation: {entry.FileName}");
+    49	                    await ConvertToProxyMp4Async(ffmpegPath, entry.FullPath, entry.TranslationCachePath, cancellationToken);
+    50	                }
+    51	                else
+    52	                {
+    53	                    log($"Using translation proxy cache: {Path.GetFileName(entry.TranslationCachePath)}");
+    54	                }
+    55	            }
+    56	
+    57	            entry.CacheState = "Ready";
+    58	        }
+    59	    }
+    60	
+    61	    public Task ConvertToPlaybackMp4Async(string ffmpegPath, string inputPath, string outputPath, CancellationToken cancellationToken)
+    62	        => RunFfmpegAsync(ffmpegPath, new[]
+    63	        {
+    64	            "-y",
+    65	            "-hide_banner",
+    66	            "-loglevel", "error",
+    67	            "-i", inputPath,
+    68	            "-map", "0:v:0?",
+    69	            "-map", "0:a:0?",
+    70	            "-c:v", "libx264",
+    71	            "-preset", "veryfast",
+    72	            "-crf", "23",
+    73	            "-pix_fmt", "yuv420p",
+    74	            "-c:a", "aac",
+    75	            "-b:a", "160k",
+    76	            "-movflags", "+faststart",
+    77	            outputPath,
+    78	        }, outputPath, cancellationToken);
+    79	
+    80	    public Task ConvertToProxyMp4Async(string ffmpegPath, string inputPath, string outputPath, CancellationToken cancellationToken)
+    81	        => RunFfmpegAsync(ffmpegPath, new[]
+    82	        {
+    83	            "-y",
+    84	            "-hide_banner",
+    85	            "-loglevel", "error",
+    86	            "-i", inputPath,
+    87	            "-f", "lavfi",
+    88	            "-i", "color=c=black:s=320x180:r=1",
+    89	            "-map", "1:v:0",
+    90	            "-map", "0:a:0?",
+    91	            "-c:v", "libx264",
+    92	            "-preset", "ultrafast",
+    93	            "-tune", "stillimage",
+    94	            "-pix_fmt", "yuv420p",
+    95	            "-c:a", "aac",
+    96	            "-b:a", "128k",
+    97	            "-ac", "2",
+    98	            "-ar", "44100",
+    99	            "-shortest",
+   100	            "-movflags", "+faststart",
+   101	            outputPath,
+   102	        }, outputPath, cancellationToken);
+   103	
+   104	    private static async Task RunFfmpegAsync(string ffmpegPath, IReadOnlyList<string> arguments, string outputPath, CancellationToken cancellationToken)
+   105	    {
+   106	        Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);
+   107	
+   108	        var psi = new ProcessStartInfo
+   109	        {
+   110	            FileName = ffmpegPath,
+   111	            UseShellExecute = false,
+   112	            RedirectStandardOutput = true,
+   113	            RedirectStandardError = true,
+   114	            CreateNoWindow = true,
+   115	        };
+   116	
+   117	        foreach (var arg in arguments)
+   118	            psi.ArgumentList.Add(arg);
+   119	
+   120	        using var process = new Process { StartInfo = psi };
+   121	        process.Start();
+   122	
+   123	        using var reg = cancellationToken.Register(() =>
+   124	        {
+   125	            try
+   126	            {
+   127	                if (!process.HasExited)
+   128	                    process.Kill(entireProcessTree: true);
+   129	            }
+   130	            catch
+   131	            {
+   132	            }
+   133	        });
+   134	
+   135	        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+   136	        var stderrTask = process.StandardError.ReadToEndAsync();
+   137	        await process.WaitForExitAsync(cancellationToken);
+   138	
+   139	        var stdout = await stdoutTask;
+   140	        var stderr = await stderrTask;
+   141	
+   142	        if (process.ExitCode != 0 || !File.Exists(outputPath))
+   143	        {
+   144	            throw new InvalidOperationException(
+   145	                $"ffmpeg failed.\nOutput: {outputPath}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}");
+   146	        }
+   147	    }
+   148	
+   149	    private static bool NeedsRebuild(string sourcePath, string outputPath)
+   150	    {
+   151	        if (!File.Exists(outputPath))
+   152	            return true;
+   153	
+   154	        var source = new FileInfo(sourcePath);
+   155	        var output = new FileInfo(outputPath);
+   156	
+   157	        return output.Length <= 0 || output.LastWriteTimeUtc < source.LastWriteTimeUtc;
+   158	    }
+   159	}
+===== PlayerFilesService.cs
+     1	using PublicVideoLauncher.Models;
+     2	using System.Collections.Generic;
+     3	using System.IO;
+     4	using System.Linq;
+     5	using System.Text;
+     6	using System.Text.Json;
+     7	using System.Threading;
+     8	using System.Threading.Tasks;
+     9	
+    10	namespace PublicVideoLauncher.Services;
+    11	
+    12	public sealed class PlayerFilesService
+    13	{
+    14	    private static readonly UTF8Encoding Utf8NoBom = new(false);
+    15	
+    16	    public async Task WriteAllAsync(string rootFolder, IReadOnlyList<VideoEntry> entries, CancellationToken cancellationToken)
+    17	    {
+    18	        await WritePlaylistAsync(rootFolder, entries, cancellationToken);
+    19	        await File.WriteAllTextAsync(Path.Combine(rootFolder, "player.html"), PlayerHtml, Utf8NoBom, cancellationToken);
+    20	        await File.WriteAllTextAsync(Path.Combine(rootFolder, "favicon.svg"), FaviconSvg, Utf8NoBom, cancellationToken);
+    21	    }
+    22	
+    23	    private static async Task WritePlaylistAsync(string rootFolder, IReadOnlyList<VideoEntry> entries, CancellationToken cancellationToken)
+    24	    {
+    25	        var items = entries.Select(x => new
+    26	        {
+    27	            id = x.Id,
+    28	            title = x.Title,
+    29	            src = x.PlaybackUrl,
+    30	            translateSrc = x.TranslationUrl,
+    31	            originalSrc = x.OriginalUrl,
+    32	            playbackKind = x.PlaybackKind,
+    33	            translationKind = x.TranslationKind,
+    34	        });
+    35	
+    36	        var json = JsonSerializer.Serialize(items, new JsonSerializerOptions { WriteIndented = true });
+    37	        await File.WriteAllTextAsync(Path.Combine(rootFolder, "playlist.json"), json, Utf8NoBom, cancellationToken);
+    38	    }
+    39	
+    40	    public const string FaviconSvg = """
+    41	<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    42	  <rect width="64" height="64" rx="14" fill="#081122"/>
+    43	  <circle cx="18" cy="32" r="6" fill="#22d3ee"/>
+    44	  <path d="M28 20h18a6 6 0 0 1 6 6v12a6 6 0 0 1-6 6H28z" fill="#e2e8f0" opacity="0.95"/>
+    45	</svg>
+    46	""";
+    47	
+    48	    public const string PlayerHtml = """
+    49	<!doctype html>
+    50	<html lang="en">
+    51	<head>
+    52	  <meta charset="UTF-8" />
+    53	  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    54	  <title>Local Video Player</title>
+    55	  <style>
+    56	    :root {
+    57	      --bg: #0b0d12;
+    58	      --panel: rgba(255,255,255,0.06);
+    59	      --panel-strong: rgba(255,255,255,0.08);
+    60	      --panel-border: rgba(255,255,255,0.10);
+    61	      --text: #f5f7fb;
+    62	      --muted: #9aa6bd;
+    63	      --accent: #6ea8fe;
+    64	      --accent-2: rgba(110,168,254,0.18);
+    65	      --success: #72e29a;
+    66	      --shadow: 0 18px 50px rgba(0,0,0,.42);
+    67	      --radius: 20px;
+    68	      --radius-sm: 14px;
+    69	    }
+    70	
+    71	    * { box-sizing: border-box; }
+    72	
+    73	    html, body {
+    74	      margin: 0;
+    75	      width: 100%;
+    76	      min-height: 100%;
+    77	      background:
+    78	        radial-gradient(circle at top, rgba(110,168,254,0.14), transparent 30%),
+    79	        linear-gradient(180deg, #111827 0%, var(--bg) 48%, #07090d 100%);
+    80	      color: var(--text);
+    81	      font-family: Inter, Segoe UI, Roboto, Arial, sans-serif;
+    82	    }
+    83	
+    84	    body {
+    85	      padding: 18px;
+    86	      box-sizing: border-box;
+    87	      min-height: 100dvh;
+    88	      overflow: hidden;
+    89	    }
+    90	
+    91	    .app {
+    92	      width: 100%;
+    93	      height: calc(100dvh - 36px);
+    94	      display: grid;
+    95	      grid-template-columns: minmax(0, 1fr) 390px;
+    96	      gap: 12px;
+    97	      min-height: 0;
+    98	    }
+    99	
+   100	    .main {
+   101	      min-width: 0;
+   102	      min-height: 0;
+   103	      display: grid;
+   104	      grid-template-rows: auto minmax(0, 1fr) auto;
+   105	      gap: 14px;
+   106	    }
+   107	
+   108	    .panel {
+   109	      border: 1px solid var(--panel-border);
+   110	      background: var(--panel);
+   111	      backdrop-filter: blur(14px);
+   112	      border-radius: var(--radius-sm);
+   113	      box-shadow: var(--shadow);
+   114	    }
+   115	
+   116	    .topbar {
+   117	      display: flex;
+   118	      align-items: center;
+   119	      justify-content: space-between;
+   120	      gap: 14px;
+   121	      padding: 12px 16px;
+   122	      min-width: 0;
+   123	    }
+   124	
+   125	    .brand {
+   126	      display: flex;
+   127	      align-items: center;
+   128	      gap: 12px;
+   129	      min-width: 0;
+   130	    }
+   131	
+   132	    .brand-dot {
+   133	      width: 10px;
+   134	      height: 10px;
+   135	      border-radius: 999px;
+   136	      background: var(--accent);
+   137	      box-shadow: 0 0 18px rgba(110,168,254,.85);
+   138	      flex: 0 0 auto;
+   139	    }
+   140	
+   141	    .brand-copy { min-width: 0; }
+   142	
+   143	    .title {
+   144	      font-size: 15px;
+   145	      font-weight: 700;
+   146	      white-space: nowrap;
+   147	      overflow: hidden;
+   148	      text-overflow: ellipsis;
+   149	    }
+   150	
+   151	    .subtitle {
+   152	      margin-top: 2px;
+   153	      font-size: 12px;
+   154	      color: var(--muted);
+   155	      white-space: nowrap;
+   156	      overflow: hidden;
+   157	      text-overflow: ellipsis;
+   158	    }
+   159	
+   160	    .badges {
+   161	      display: flex;
+   162	      align-items: center;
+   163	      gap: 8px;
+   164	      flex-wrap: wrap;
+   165	      justify-content: flex-end;
+   166	    }
+   167	
+   168	    .pill {
+   169	      padding: 7px 10px;
+   170	      border-radius: 999px;
+   171	      font-size: 12px;
+   172	      font-weight: 700;
+   173	      letter-spacing: .3px;
+   174	      border: 1px solid rgba(110,168,254,.22);
+   175	      background: rgba(110,168,254,.10);
+   176	      color: #dce9ff;
+   177	      white-space: nowrap;
+   178	    }
+   179	
+   180	    .player-shell {
+   181	      min-width: 0;
+   182	      min-height: 0;
+   183	      padding: 14px;
+   184	      display: flex;
+   185	      place-items: center;
+   186	      overflow: hidden;
+   187	    }
+   188	
+   189	    .video-wrap {
+   190	      position: relative;
+   191	      width: 100%;
+   192	      height: 100%;
+   193	      min-width: 0;
+   194	      min-height: 0;
+   195	      max-width: 100%;
+   196	      max-height: 100%;
+   197	      border-radius: var(--radius);
+   198	      overflow: hidden;
+   199	      background: #000;
+   200	      border: 1px solid var(--panel-border);
+   201	    }
+   202	
+   203	    video {
+   204	      width: 100%;
+   205	      height: 100%;
+   206	      display: block;
+   207	      background: #000;
+   208	      object-fit: contain;
+   209	      object-position: center center;
+   210	    }
+   211	
+   212	    .overlay {
+   213	      position: absolute;
+   214	      inset: 0;
+   215	      display: none;
+   216	      align-items: center;
+   217	      justify-content: center;
+   218	      padding: 24px;
+   219	      background: linear-gradient(180deg, rgba(11,13,18,0.72), rgba(11,13,18,0.88));
+   220	      text-align: center;
+   221	    }
+   222	
+   223	    .overlay.visible { display: flex; }
+   224	
+   225	    .overlay-card {
+   226	      width: min(560px, 100%);
+   227	      padding: 24px;
+   228	      border-radius: 18px;
+   229	      border: 1px solid var(--panel-border);
+   230	      background: rgba(255,255,255,.06);
+   231	      backdrop-filter: blur(10px);
+   232	    }
+   233	
+   234	    .overlay-title {
+   235	      margin: 0 0 8px;
+   236	      font-size: 20px;
+   237	      font-weight: 800;
+   238	    }
+   239	
+   240	    .overlay-text {
+   241	      margin: 0;
+   242	      color: var(--muted);
+   243	      line-height: 1.55;
+   244	      font-size: 14px;
+   245	    }
+   246	
+   247	    .overlay-text.error { color: #ffd6d6; }
+   248	
+   249	    .controls {
+   250	      display: flex;
+   251	      align-items: center;
+   252	      justify-content: space-between;
+   253	      gap: 12px;
+   254	      padding: 12px 16px;
+   255	      min-width: 0;
+   256	    }
+   257	
+   258	    .controls-left,
+   259	    .controls-right {
+   260	      display: flex;
+   261	      align-items: center;
+   262	      gap: 10px;
+   263	      min-width: 0;
+   264	      flex-wrap: wrap;
+   265	    }
+   266	
+   267	    .btn {
+   268	      appearance: none;
+   269	      border: 1px solid var(--panel-border);
+   270	      background: var(--panel-strong);
+   271	      color: var(--text);
+   272	      border-radius: 12px;
+   273	      padding: 10px 14px;
+   274	      font-size: 13px;
+   275	      font-weight: 700;
+   276	      cursor: pointer;
+   277	      transition: .18s ease;
+   278	    }
+   279	
+   280	    .btn:hover:not(:disabled) {
+   281	      transform: translateY(-1px);
+   282	      border-color: rgba(110,168,254,.35);
+   283	      background: rgba(255,255,255,.10);
+   284	    }
+   285	
+   286	    .btn:disabled { opacity: .45; cursor: not-allowed; }
+   287	
+   288	    .btn.primary {
+   289	      background: var(--accent-2);
+   290	      border-color: rgba(110,168,254,.28);
+   291	      color: #e6f0ff;
+   292	    }
+   293	
+   294	    .meta {
+   295	      font-size: 12px;
+   296	      color: var(--muted);
+   297	      white-space: nowrap;
+   298	      overflow: hidden;
+   299	      text-overflow: ellipsis;
+   300	      max-width: 420px;
+   301	    }
+   302	
+   303	    .check {
+   304	      display: inline-flex;
+   305	      align-items: center;
+   306	      gap: 8px;
+   307	      font-size: 13px;
+   308	      color: var(--muted);
+   309	      user-select: none;
+   310	    }
+   311	
+   312	    .check input { accent-color: var(--accent); }
+   313	
+   314	    .sidebar {
+   315	      min-width: 0;
+   316	      min-height: 0;
+   317	      overflow: hidden;
+   318	      display: grid;
+   319	      grid-template-rows: auto auto minmax(0, 1fr);
+   320	      gap: 14px;
+   321	      padding: 14px;
+   322	    }
+   323	
+   324	    .sidebar-title { font-size: 16px; font-weight: 800; }
+   325	    .sidebar-subtitle { font-size: 12px; color: var(--muted); margin-top: 4px; }
+   326	
+   327	    .next-card {
+   328	      padding: 14px;
+   329	      border-radius: 16px;
+   330	      border: 1px solid var(--panel-border);
+   331	      background: rgba(255,255,255,.04);
+   332	    }
+   333	
+   334	    .next-label {
+   335	      font-size: 11px;
+   336	      letter-spacing: .4px;
+   337	      text-transform: uppercase;
+   338	      color: var(--muted);
+   339	      margin-bottom: 8px;
+   340	    }
+===== PortHelper.cs
+     1	using System;
+     2	using System.Net;
+     3	using System.Net.Sockets;
+     4	
+     5	namespace PublicVideoLauncher.Services;
+     6	
+     7	public static class PortHelper
+     8	{
+     9	    public static bool TestPortBindable(int port)
+    10	    {
+    11	        TcpListener? listener = null;
+    12	        try
+    13	        {
+    14	            listener = new TcpListener(IPAddress.Loopback, port);
+    15	            listener.Start();
+    16	            return true;
+    17	        }
+    18	        catch
+    19	        {
+    20	            return false;
+    21	        }
+    22	        finally
+    23	        {
+    24	            try { listener?.Stop(); } catch { }
+    25	        }
+    26	    }
+    27	
+    28	    public static int GetFreeTcpPort(int preferredPort = 8000, int maxAttempts = 50)
+    29	    {
+    30	        if (TestPortBindable(preferredPort))
+    31	            return preferredPort;
+    32	
+    33	        for (var port = preferredPort + 1; port < preferredPort + maxAttempts; port++)
+    34	        {
+    35	            if (TestPortBindable(port))
+    36	                return port;
+    37	        }
+    38	
+    39	        using var listener = new TcpListener(IPAddress.Loopback, 0);
+    40	        listener.Start();
+    41	        return ((IPEndPoint)listener.LocalEndpoint).Port;
+    42	    }
+    43	
+    44	    public static bool TestTcpPortOpen(string hostName, int portNumber, int timeoutMs = 1500)
+    45	    {
+    46	        using var client = new TcpClient();
+    47	        try
+    48	        {
+    49	            var asyncResult = client.BeginConnect(hostName, portNumber, null, null);
+    50	            var ok = asyncResult.AsyncWaitHandle.WaitOne(timeoutMs, false);
+    51	            if (!ok)
+    52	                return false;
+    53	
+    54	            client.EndConnect(asyncResult);
+    55	            return true;
+    56	        }
+    57	        catch
+    58	        {
+    59	            return false;
+    60	        }
+    61	    }
+    62	}
+===== ServerRunner.cs
+     1	using System;
+     2	using System.Diagnostics;
+     3	using System.IO;
+     4	using System.Text.RegularExpressions;
+     5	using System.Threading;
+     6	using System.Threading.Tasks;
+     7	
+     8	namespace PublicVideoLauncher.Services;
+     9	
+    10	public sealed class LaunchSession
+    11	{
+    12	    public required int Port { get; init; }
+    13	    public required string LocalUrl { get; init; }
+    14	    public required string PublicUrl { get; init; }
+    15	}
+    16	
+    17	public sealed class ServerRunner
+    18	{
+    19	    private Process? _caddyProcess;
+    20	    private Process? _cloudflaredProcess;
+    21	    private string? _caddyStdoutFile;
+    22	    private string? _caddyStderrFile;
+    23	    private string? _cloudflaredStdoutFile;
+    24	    private string? _cloudflaredStderrFile;
+    25	
+    26	    public bool IsRunning =>
+    27	        (_caddyProcess is { HasExited: false }) ||
+    28	        (_cloudflaredProcess is { HasExited: false });
+    29	
+    30	    public async Task<LaunchSession> StartAsync(
+    31	        VideoWorkspace workspace,
+    32	        int requestedPort,
+    33	        ToolPaths tools,
+    34	        Action<string> log,
+    35	        CancellationToken cancellationToken,
+    36	        string? initialVideoSrc = null)
+    37	    {
+    38	        await StopAsync(log);
+    39	
+    40	        if (workspace.RootFolder is null)
+    41	            throw new InvalidOperationException("Workspace root is not set.");
+    42	
+    43	        var port = PortHelper.GetFreeTcpPort(requestedPort);
+    44	        var localUrl = $"http://127.0.0.1:{port}/";
+    45	        log($"Local server: {localUrl}");
+    46	
+    47	        _caddyStdoutFile = Path.GetTempFileName();
+    48	        _caddyStderrFile = Path.GetTempFileName();
+    49	
+    50	        _caddyProcess = StartProcess(
+    51	            tools.CaddyPath,
+    52	            new[] { "file-server", "--listen", $"127.0.0.1:{port}", "--root", "." },
+    53	            workspace.RootFolder,
+    54	            _caddyStdoutFile,
+    55	            _caddyStderrFile);
+    56	
+    57	        log("Launching Caddy...");
+    58	        var caddyReady = await WaitForPortAsync(_caddyProcess, port, 30, cancellationToken);
+    59	        if (!caddyReady)
+    60	        {
+    61	            throw new InvalidOperationException(
+    62	                "Caddy did not start in time.\n\nSTDOUT:\n" + ReadFileSafe(_caddyStdoutFile) +
+    63	                "\n\nSTDERR:\n" + ReadFileSafe(_caddyStderrFile));
+    64	        }
+    65	
+    66	        _cloudflaredStdoutFile = Path.GetTempFileName();
+    67	        _cloudflaredStderrFile = Path.GetTempFileName();
+    68	
+    69	        _cloudflaredProcess = StartProcess(
+    70	            tools.CloudflaredPath,
+    71	            new[] { "tunnel", "--url", localUrl, "--no-autoupdate" },
+    72	            workspace.RootFolder,
+    73	            _cloudflaredStdoutFile,
+    74	            _cloudflaredStderrFile);
+    75	
+    76	        log("Launching cloudflared...");
+    77	        var publicUrl = await WaitForPublicUrlAsync(_cloudflaredProcess, _cloudflaredStdoutFile, _cloudflaredStderrFile, cancellationToken);
+    78	        if (string.IsNullOrWhiteSpace(publicUrl))
+    79	        {
+    80	            throw new InvalidOperationException(
+    81	                "Could not parse cloudflared public URL.\n\nSTDOUT:\n" + ReadFileSafe(_cloudflaredStdoutFile) +
+    82	                "\n\nSTDERR:\n" + ReadFileSafe(_cloudflaredStderrFile));
+    83	        }
+    84	
+    85	        var targetUrl = publicUrl.TrimEnd('/') + "/player.html?list=/playlist.json";
+    86	        if (!string.IsNullOrWhiteSpace(initialVideoSrc))
+    87	        {
+    88	            targetUrl += "&src=" + Uri.EscapeDataString(initialVideoSrc);
+    89	        }
+    90	
+    91	        if (port != requestedPort)
+    92	        {
+    93	            log($"Requested port {requestedPort} is unavailable. Using port {port} instead.");
+    94	        }
+    95	
+    96	        log("Public URL: " + targetUrl);
+    97	
+    98	        _ = PumpLogsAsync(_caddyProcess, _caddyStdoutFile, _caddyStderrFile, log, "caddy", cancellationToken);
+    99	        _ = PumpLogsAsync(_cloudflaredProcess, _cloudflaredStdoutFile, _cloudflaredStderrFile, log, "cloudflared", cancellationToken);
+   100	
+   101	        return new LaunchSession
+   102	        {
+   103	            Port = port,
+   104	            LocalUrl = localUrl,
+   105	            PublicUrl = targetUrl,
+   106	        };
+   107	    }
+   108	
+   109	    public async Task StopAsync(Action<string> log)
+   110	    {
+   111	        await StopProcessAsync(_cloudflaredProcess, log, "cloudflared");
+   112	        await StopProcessAsync(_caddyProcess, log, "caddy");
+   113	        _cloudflaredProcess = null;
+   114	        _caddyProcess = null;
+   115	        CleanupTempFile(ref _caddyStdoutFile);
+   116	        CleanupTempFile(ref _caddyStderrFile);
+   117	        CleanupTempFile(ref _cloudflaredStdoutFile);
+   118	        CleanupTempFile(ref _cloudflaredStderrFile);
+   119	    }
+   120	
+   121	    private static Process StartProcess(string fileName, string[] args, string workingDirectory, string stdoutPath, string stderrPath)
+   122	    {
+   123	        var psi = new ProcessStartInfo
+   124	        {
+   125	            FileName = fileName,
+   126	            WorkingDirectory = workingDirectory,
+   127	            UseShellExecute = false,
+   128	            CreateNoWindow = true,
+   129	            RedirectStandardOutput = true,
+   130	            RedirectStandardError = true,
+   131	        };
+   132	
+   133	        foreach (var arg in args)
+   134	            psi.ArgumentList.Add(arg);
+   135	
+   136	        var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
+   137	        process.OutputDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) AppendLineSafe(stdoutPath, e.Data!); };
+   138	        process.ErrorDataReceived += (_, e) => { if (!string.IsNullOrWhiteSpace(e.Data)) AppendLineSafe(stderrPath, e.Data!); };
+   139	        process.Start();
+   140	        process.BeginOutputReadLine();
+   141	        process.BeginErrorReadLine();
+   142	        return process;
+   143	    }
+   144	
+   145	    private static async Task<bool> WaitForPortAsync(Process process, int port, int attempts, CancellationToken cancellationToken)
+   146	    {
+   147	        for (var i = 0; i < attempts; i++)
+   148	        {
+   149	            cancellationToken.ThrowIfCancellationRequested();
+   150	            if (process.HasExited)
+   151	                return false;
+   152	
+   153	            if (PortHelper.TestTcpPortOpen("127.0.0.1", port))
+   154	                return true;
+   155	
+   156	            await Task.Delay(500, cancellationToken);
+   157	        }
+   158	
+   159	        return false;
+   160	    }
+   161	
+   162	    private static async Task<string?> WaitForPublicUrlAsync(Process process, string stdoutPath, string stderrPath, CancellationToken cancellationToken)
+   163	    {
+   164	        var regex = new Regex(@"https://[a-z0-9-]+\.trycloudflare\.com", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+   165	
+   166	        for (var i = 0; i < 90; i++)
+   167	        {
+   168	            cancellationToken.ThrowIfCancellationRequested();
+   169	
+   170	            var text = ReadFileSafe(stdoutPath) + Environment.NewLine + ReadFileSafe(stderrPath);
+   171	            var match = regex.Match(text);
+   172	            if (match.Success)
+   173	                return match.Value;
+   174	
+   175	            if (process.HasExited)
+   176	                break;
+   177	
+   178	            await Task.Delay(1000, cancellationToken);
+   179	        }
+   180	
+   181	        return null;
+   182	    }
+   183	
+   184	    private static async Task PumpLogsAsync(Process? process, string? stdoutPath, string? stderrPath, Action<string> log, string prefix, CancellationToken cancellationToken)
+   185	    {
+   186	        if (process is null || string.IsNullOrWhiteSpace(stdoutPath) || string.IsNullOrWhiteSpace(stderrPath))
+   187	            return;
+   188	
+   189	        long stdoutPos = 0;
+   190	        long stderrPos = 0;
+   191	
+   192	        while (!cancellationToken.IsCancellationRequested && !process.HasExited)
+   193	        {
+   194	            foreach (var line in ReadNewLines(stdoutPath, ref stdoutPos))
+   195	                log($"[{prefix}] {line}");
+   196	
+   197	            foreach (var line in ReadNewLines(stderrPath, ref stderrPos))
+   198	                log($"[{prefix}] {line}");
+   199	
+   200	            try { await Task.Delay(1000, cancellationToken); } catch { break; }
+   201	        }
+   202	    }
+   203	
+   204	    private static string[] ReadNewLines(string path, ref long position)
+   205	    {
+   206	        try
+   207	        {
+   208	            if (!File.Exists(path))
+   209	                return Array.Empty<string>();
+   210	
+   211	            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+   212	            if (position > stream.Length)
+   213	                position = 0;
+   214	
+   215	            stream.Seek(position, SeekOrigin.Begin);
+   216	            using var reader = new StreamReader(stream);
+   217	            var text = reader.ReadToEnd();
+   218	            position = stream.Position;
+   219	            return string.IsNullOrWhiteSpace(text)
+   220	                ? Array.Empty<string>()
+   221	                : text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries);
+   222	        }
+   223	        catch
+   224	        {
+   225	            return Array.Empty<string>();
+   226	        }
+   227	    }
+   228	
+   229	    private static async Task StopProcessAsync(Process? process, Action<string> log, string name)
+   230	    {
+   231	        if (process is null)
+   232	            return;
+   233	
+   234	        try
+   235	        {
+   236	            if (!process.HasExited)
+   237	            {
+   238	                process.Kill(entireProcessTree: true);
+   239	                await process.WaitForExitAsync();
+   240	                log($"Stopped {name}.");
+   241	            }
+   242	        }
+   243	        catch (Exception ex)
+   244	        {
+   245	            log($"Failed to stop {name}: {ex.Message}");
+   246	        }
+   247	        finally
+   248	        {
+   249	            process.Dispose();
+   250	        }
+   251	    }
+   252	
+   253	    private static string ReadFileSafe(string? path)
+   254	    {
+   255	        try
+   256	        {
+   257	            return !string.IsNullOrWhiteSpace(path) && File.Exists(path)
+   258	                ? File.ReadAllText(path)
+   259	                : string.Empty;
+   260	        }
+   261	        catch
+   262	        {
+   263	            return string.Empty;
+   264	        }
+   265	    }
+   266	
+   267	    private static void AppendLineSafe(string path, string text)
+   268	    {
+   269	        try { File.AppendAllText(path, text + Environment.NewLine); } catch { }
+   270	    }
+   271	
+   272	    private static void CleanupTempFile(ref string? path)
+   273	    {
+   274	        try
+   275	        {
+   276	            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+   277	                File.Delete(path);
+   278	        }
+   279	        catch { }
+   280	        finally { path = null; }
+   281	    }
+   282	}
+===== ToolResolver.cs
+     1	using System;
+     2	using System.Collections.Generic;
+     3	using System.IO;
+     4	using System.Net.Http;
+     5	using System.Runtime.InteropServices;
+     6	using System.Threading.Tasks;
+     7	using System.Diagnostics;
+     8	using System.Formats.Tar;
+     9	using System.IO.Compression;
+    10	using System.Linq;
+    11	using System.Net.Http.Headers;
+    12	using System.Text.Json;
+    13	using System.Threading;
+    14	
+    15	
+    16	namespace PublicVideoLauncher.Services;
+    17	
+    18	
+    19	public sealed class ToolPaths
+    20	{
+    21	    public required string CloudflaredPath { get; init; }
+    22	    public required string CaddyPath { get; init; }
+    23	    public required string FfmpegPath { get; init; }
+    24	}
+    25	
+    26	public static class ToolResolver
+    27	{
+    28	    private static readonly HttpClient Http = CreateHttpClient();
+    29	
+    30	    public static async Task<ToolPaths> EnsureAllAsync(
+    31	        string rootFolder,
+    32	        Action<string> log,
+    33	        CancellationToken cancellationToken = default)
+    34	    {
+    35	        if (string.IsNullOrWhiteSpace(rootFolder))
+    36	            throw new ArgumentException("rootFolder is empty.", nameof(rootFolder));
+    37	
+    38	        var ffmpegPath = await EnsureFfmpegAsync(rootFolder, log, cancellationToken);
+    39	        var caddyPath = await EnsureCaddyAsync(rootFolder, log, cancellationToken);
+    40	        var cloudflaredPath = await EnsureCloudflaredAsync(rootFolder, log, cancellationToken);
+    41	
+    42	        return new ToolPaths
+    43	        {
+    44	            FfmpegPath = ffmpegPath,
+    45	            CaddyPath = caddyPath,
+    46	            CloudflaredPath = cloudflaredPath,
+    47	        };
+    48	    }
+    49	
+    50	    private static async Task<string> EnsureFfmpegAsync(
+    51	        string rootFolder,
+    52	        Action<string> log,
+    53	        CancellationToken cancellationToken)
+    54	    {
+    55	        var existing = GetCommandPathIfExists("ffmpeg", rootFolder);
+    56	        if (!string.IsNullOrWhiteSpace(existing))
+    57	        {
+    58	            log($"ffmpeg found: {existing}");
+    59	            return existing;
+    60	        }
+    61	
+    62	        if (!OperatingSystem.IsWindows())
+    63	        {
+    64	            throw new FileNotFoundException(
+    65	                "ffmpeg not found. On Linux/macOS install ffmpeg manually or place it into .tools/ffmpeg.");
+    66	        }
+    67	
+    68	        log("ffmpeg not found. Installing portable ffmpeg...");
+    69	        return await InstallFfmpegPortableAsync(rootFolder, log, cancellationToken);
+    70	    }
+    71	
+    72	    private static async Task<string> EnsureCaddyAsync(
+    73	        string rootFolder,
+    74	        Action<string> log,
+    75	        CancellationToken cancellationToken)
+    76	    {
+    77	        var existing = GetCommandPathIfExists("caddy", rootFolder);
+    78	        if (!string.IsNullOrWhiteSpace(existing))
+    79	        {
+    80	            log($"caddy found: {existing}");
+    81	            return existing;
+    82	        }
+    83	
+    84	        log("caddy not found. Installing portable caddy...");
+    85	        return await InstallCaddyPortableAsync(rootFolder, log, cancellationToken);
+    86	    }
+    87	
+    88	    private static async Task<string> EnsureCloudflaredAsync(
+    89	        string rootFolder,
+    90	        Action<string> log,
+    91	        CancellationToken cancellationToken)
+    92	    {
+    93	        var existing = GetCommandPathIfExists("cloudflared", rootFolder);
+    94	        if (!string.IsNullOrWhiteSpace(existing))
+    95	        {
+    96	            log($"cloudflared found: {existing}");
+    97	            return existing;
+    98	        }
+    99	
+   100	        log("cloudflared not found. Installing portable cloudflared...");
+   101	        return await InstallCloudflaredPortableAsync(rootFolder, log, cancellationToken);
+   102	    }
+   103	
+   104	    public static string GetToolsRoot(string rootFolder)
+   105	    {
+   106	        var toolsRoot = Path.Combine(rootFolder, ".tools");
+   107	        Directory.CreateDirectory(toolsRoot);
+   108	        return toolsRoot;
+   109	    }
+   110	
+   111	    private static string GetPortableToolPath(string toolName, string rootFolder)
+   112	    {
+   113	        var toolsRoot = GetToolsRoot(rootFolder);
+   114	
+   115	        return toolName switch
+   116	        {
+   117	            "ffmpeg" => OperatingSystem.IsWindows()
+   118	                ? Path.Combine(toolsRoot, "ffmpeg", "ffmpeg.exe")
+   119	                : Path.Combine(toolsRoot, "ffmpeg", "ffmpeg"),
+   120	
+   121	            "caddy" => OperatingSystem.IsWindows()
+   122	                ? Path.Combine(toolsRoot, "caddy", "caddy.exe")
+   123	                : Path.Combine(toolsRoot, "caddy", "caddy"),
+   124	
+   125	            "cloudflared" => OperatingSystem.IsWindows()
+   126	                ? Path.Combine(toolsRoot, "cloudflared", "cloudflared.exe")
+   127	                : Path.Combine(toolsRoot, "cloudflared", "cloudflared"),
+   128	
+   129	            _ => throw new InvalidOperationException($"Unsupported tool: {toolName}")
+   130	        };
+   131	    }
+   132	
+   133	    private static string? GetCommandPathIfExists(string toolName, string rootFolder)
+   134	    {
+   135	        var directPortable = GetPortableToolPath(toolName, rootFolder);
+   136	        if (File.Exists(directPortable))
+   137	            return directPortable;
+   138	
+   139	        var extraPortableCandidates = toolName switch
+   140	        {
+   141	            "ffmpeg" => new[]
+   142	            {
+   143	                Path.Combine(GetToolsRoot(rootFolder), "ffmpeg", "bin", OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg"),
+   144	            },
+   145	            "caddy" => new[]
+   146	            {
+   147	                Path.Combine(GetToolsRoot(rootFolder), "caddy", "bin", OperatingSystem.IsWindows() ? "caddy.exe" : "caddy"),
+   148	            },
+   149	            "cloudflared" => new[]
+   150	            {
+   151	                Path.Combine(GetToolsRoot(rootFolder), "cloudflared", "bin", OperatingSystem.IsWindows() ? "cloudflared.exe" : "cloudflared"),
+   152	            },
+   153	            _ => Array.Empty<string>()
+   154	        };
+   155	
+   156	        foreach (var candidate in extraPortableCandidates)
+   157	        {
+   158	            if (File.Exists(candidate))
+   159	                return candidate;
+   160	        }
+   161	
+   162	        var fromPath = FindInPath(OperatingSystem.IsWindows() ? $"{toolName}.exe" : toolName);
+   163	        if (!string.IsNullOrWhiteSpace(fromPath))
+   164	            return fromPath;
+   165	
+   166	        if (OperatingSystem.IsWindows() && toolName.Equals("cloudflared", StringComparison.OrdinalIgnoreCase))
+   167	        {
+   168	            var knownCandidates = new List<string>();
+   169	
+   170	            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+   171	            if (!string.IsNullOrWhiteSpace(localAppData))
+   172	            {
+   173	                knownCandidates.Add(Path.Combine(localAppData, "Microsoft", "WindowsApps", "cloudflared.exe"));
+   174	
+   175	                var wingetRoot = Path.Combine(localAppData, "Microsoft", "WinGet", "Packages");
+   176	                if (Directory.Exists(wingetRoot))
+   177	                {
+   178	                    try
+   179	                    {
+   180	                        var pkg = Directory.GetDirectories(wingetRoot)
+   181	                            .Select(x => new DirectoryInfo(x))
+   182	                            .Where(x =>
+   183	                                x.Name.StartsWith("Cloudflare.cloudflared_", StringComparison.OrdinalIgnoreCase) &&
+   184	                                !x.Name.Contains(".disabled", StringComparison.OrdinalIgnoreCase))
+   185	                            .OrderByDescending(x => x.LastWriteTimeUtc)
+   186	                            .FirstOrDefault();
+   187	
+   188	                        if (pkg is not null)
+   189	                        {
+   190	                            knownCandidates.Add(Path.Combine(pkg.FullName, "cloudflared.exe"));
+   191	                        }
+   192	                    }
+   193	                    catch
+   194	                    {
+   195	                    }
+   196	                }
+   197	            }
+   198	
+   199	            foreach (var candidate in knownCandidates)
+   200	            {
+   201	                if (File.Exists(candidate))
+   202	                    return candidate;
+   203	            }
+   204	        }
+   205	
+   206	        return null;
+   207	    }
+   208	
+   209	    private static string? FindInPath(string fileName)
+   210	    {
+   211	        var pathValue = Environment.GetEnvironmentVariable("PATH");
+   212	        if (string.IsNullOrWhiteSpace(pathValue))
+   213	            return null;
+   214	
+   215	        foreach (var dir in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+   216	        {
+   217	            try
+   218	            {
+   219	                var candidate = Path.Combine(dir, fileName);
+   220	                if (File.Exists(candidate))
+   221	                    return candidate;
+   222	            }
+   223	            catch
+   224	            {
+   225	            }
+   226	        }
+   227	
+   228	        return null;
+   229	    }
+   230	
+   231	    private static async Task<string> InstallFfmpegPortableAsync(
+   232	        string rootFolder,
+   233	        Action<string> log,
+   234	        CancellationToken cancellationToken)
+   235	    {
+   236	        var toolsRoot = GetToolsRoot(rootFolder);
+   237	        var dstDir = Path.Combine(toolsRoot, "ffmpeg");
+   238	        Directory.CreateDirectory(dstDir);
+   239	
+   240	        var dstExe = GetPortableToolPath("ffmpeg", rootFolder);
+   241	
+   242	        var zipPath = Path.Combine(Path.GetTempPath(), $"ffmpeg_{Guid.NewGuid():N}.zip");
+   243	        var extractDir = Path.Combine(Path.GetTempPath(), $"ffmpeg_extract_{Guid.NewGuid():N}");
+   244	
+   245	        const string ffmpegUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
+   246	
+   247	        try
+   248	        {
+   249	            log("Downloading ffmpeg...");
+   250	            await DownloadFileAsync(ffmpegUrl, zipPath, cancellationToken);
+   251	
+   252	            Directory.CreateDirectory(extractDir);
+   253	            ZipFile.ExtractToDirectory(zipPath, extractDir, true);
+   254	
+   255	            var fileName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
+   256	            var foundExe = Directory.GetFiles(extractDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
+   257	
+   258	            if (string.IsNullOrWhiteSpace(foundExe))
+   259	                throw new InvalidOperationException("ffmpeg executable not found inside extracted archive.");
+   260	
+   261	            File.Copy(foundExe, dstExe, true);
+   262	
+   263	            if (!OperatingSystem.IsWindows())
+   264	                await EnsureExecutableAsync(dstExe, cancellationToken);
+   265	
+   266	            if (!File.Exists(dstExe))
+   267	                throw new InvalidOperationException("ffmpeg install failed.");
+   268	
+   269	            log($"ffmpeg installed to: {dstExe}");
+   270	            return dstExe;
+   271	        }
+   272	        finally
+   273	        {
+   274	            SafeDeleteFile(zipPath);
+   275	            SafeDeleteDirectory(extractDir);
+   276	        }
+   277	    }
+   278	
+   279	    private static async Task<string> InstallCloudflaredPortableAsync(
+   280	        string rootFolder,
+   281	        Action<string> log,
+   282	        CancellationToken cancellationToken)
+   283	    {
+   284	        var toolsRoot = GetToolsRoot(rootFolder);
+   285	        var dstDir = Path.Combine(toolsRoot, "cloudflared");
+   286	        Directory.CreateDirectory(dstDir);
+   287	
+   288	        var dstExe = GetPortableToolPath("cloudflared", rootFolder);
+   289	        var tempPath = Path.Combine(Path.GetTempPath(), $"cloudflared_{Guid.NewGuid():N}");
+   290	        var extractDir = Path.Combine(Path.GetTempPath(), $"cloudflared_extract_{Guid.NewGuid():N}");
+   291	
+   292	        try
+   293	        {
+   294	            var (assetUrl, assetName) = await GetGitHubAssetAsync(
+   295	                "https://api.github.com/repos/cloudflare/cloudflared/releases/latest",
+   296	                GetCloudflaredAssetPattern(),
+   297	                cancellationToken);
+   298	
+   299	            log($"Downloading cloudflared asset: {assetName}");
+   300	            Directory.CreateDirectory(extractDir);
+   301	
+   302	            var downloadPath = Path.HasExtension(assetName)
+   303	                ? Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}_{assetName}")
+   304	                : tempPath;
+   305	
+   306	            await DownloadFileAsync(assetUrl, downloadPath, cancellationToken);
+   307	
+   308	            if (assetName.EndsWith(".tgz", StringComparison.OrdinalIgnoreCase) ||
+   309	                assetName.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
+   310	            {
+   311	                ExtractTarGz(downloadPath, extractDir);
+   312	
+   313	                var fileName = OperatingSystem.IsWindows() ? "cloudflared.exe" : "cloudflared";
+   314	                var found = Directory.GetFiles(extractDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
+   315	                if (string.IsNullOrWhiteSpace(found))
+   316	                    throw new InvalidOperationException("cloudflared executable not found in extracted archive.");
+   317	
+   318	                File.Copy(found, dstExe, true);
+   319	                SafeDeleteFile(downloadPath);
+   320	            }
+   321	            else
+   322	            {
+   323	                File.Copy(downloadPath, dstExe, true);
+   324	                SafeDeleteFile(downloadPath);
+   325	            }
+   326	
+   327	            if (!OperatingSystem.IsWindows())
+   328	                await EnsureExecutableAsync(dstExe, cancellationToken);
+   329	
+   330	            if (!File.Exists(dstExe))
+   331	                throw new InvalidOperationException("cloudflared install failed.");
+   332	
+   333	            log($"cloudflared installed to: {dstExe}");
+   334	            return dstExe;
+   335	        }
+   336	        finally
+   337	        {
+   338	            SafeDeleteDirectory(extractDir);
+   339	        }
+   340	    }
+===== VideoWorkspace.cs
+     1	using PublicVideoLauncher.Models;
+     2	using System;
+     3	using System.Collections.Generic;
+     4	using System.IO;
+     5	using System.Linq;
+     6	using System.Text.RegularExpressions;
+     7	
+     8	namespace PublicVideoLauncher.Services;
+     9	
+    10	public sealed class VideoWorkspace
+    11	{
+    12	    private static readonly HashSet<string> SupportedExtensions = new(StringComparer.OrdinalIgnoreCase)
+    13	    {
+    14	        ".mp4", ".mkv", ".mov", ".avi", ".m4v", ".webm"
+    15	    };
+    16	
+    17	    public string? RootFolder { get; private set; }
+    18	    public bool ProxyTranslationEnabled { get; private set; }
+    19	    public string? CacheFolder => RootFolder is null ? null : Path.Combine(RootFolder, ".public-video-cache");
+    20	    public List<VideoEntry> Entries { get; } = new();
+    21	
+    22	    public void Load(string folder, bool proxyTranslationEnabled)
+    23	    {
+    24	        if (string.IsNullOrWhiteSpace(folder))
+    25	            throw new ArgumentException("Folder is empty.", nameof(folder));
+    26	
+    27	        if (!Directory.Exists(folder))
+    28	            throw new DirectoryNotFoundException($"Folder not found: {folder}");
+    29	
+    30	        RootFolder = folder;
+    31	        ProxyTranslationEnabled = proxyTranslationEnabled;
+    32	        Entries.Clear();
+    33	
+    34	        Directory.CreateDirectory(CacheFolder!);
+    35	
+    36	        var usedSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    37	
+    38	        foreach (var file in Directory.GetFiles(folder).OrderBy(Path.GetFileName, StringComparer.OrdinalIgnoreCase))
+    39	        {
+    40	            var ext = Path.GetExtension(file);
+    41	            if (!SupportedExtensions.Contains(ext))
+    42	                continue;
+    43	
+    44	            var fileName = Path.GetFileName(file);
+    45	            var title = Path.GetFileNameWithoutExtension(file);
+    46	            var baseSlug = NewSlug(title);
+    47	            var slug = baseSlug;
+    48	            var n = 2;
+    49	
+    50	            while (!usedSlugs.Add(slug))
+    51	            {
+    52	                slug = $"{baseSlug}-{n}";
+    53	                n++;
+    54	            }
+    55	
+    56	            var originalUrl = "/" + EncodeUrlPath(fileName);
+    57	            var playbackCacheFileName = $"{slug}.play.mp4";
+    58	            var playbackCachePath = Path.Combine(CacheFolder!, playbackCacheFileName);
+    59	            var playbackUrl = "/.public-video-cache/" + EncodeUrlPath(playbackCacheFileName);
+    60	
+    61	            var proxyCacheFileName = $"{slug}.proxy.mp4";
+    62	            var proxyCachePath = Path.Combine(CacheFolder!, proxyCacheFileName);
+    63	            var proxyUrl = "/.public-video-cache/" + EncodeUrlPath(proxyCacheFileName);
+    64	
+    65	            var isDirectMp4 = string.Equals(ext, ".mp4", StringComparison.OrdinalIgnoreCase);
+    66	
+    67	            var entry = new VideoEntry
+    68	            {
+    69	                Id = slug,
+    70	                Title = title,
+    71	                FileName = fileName,
+    72	                FullPath = file,
+    73	                Extension = ext,
+    74	                OriginalUrl = originalUrl,
+    75	                PlaybackUrl = isDirectMp4 ? originalUrl : playbackUrl,
+    76	                TranslationUrl = isDirectMp4 ? originalUrl : (proxyTranslationEnabled ? proxyUrl : playbackUrl),
+    77	                PlaybackCachePath = isDirectMp4 ? null : playbackCachePath,
+    78	                TranslationCachePath = isDirectMp4 ? null : (proxyTranslationEnabled ? proxyCachePath : null),
+    79	                CacheState = GetInitialCacheState(file, playbackCachePath, isDirectMp4, proxyTranslationEnabled, proxyCachePath)
+    80	            };
+    81	
+    82	            Entries.Add(entry);
+    83	        }
+    84	    }
+    85	
+    86	    private static string GetInitialCacheState(string sourcePath, string playbackCachePath, bool isDirectMp4, bool proxyEnabled, string proxyCachePath)
+    87	    {
+    88	        if (isDirectMp4)
+    89	            return "Not needed";
+    90	
+    91	        var sourceInfo = new FileInfo(sourcePath);
+    92	        var playbackReady = File.Exists(playbackCachePath) && new FileInfo(playbackCachePath).Length > 0 && new FileInfo(playbackCachePath).LastWriteTimeUtc >= sourceInfo.LastWriteTimeUtc;
+    93	        var proxyReady = !proxyEnabled || (File.Exists(proxyCachePath) && new FileInfo(proxyCachePath).Length > 0 && new FileInfo(proxyCachePath).LastWriteTimeUtc >= sourceInfo.LastWriteTimeUtc);
+    94	
+    95	        return playbackReady && proxyReady ? "Ready" : "Pending";
+    96	    }
+    97	
+    98	    public static string NewSlug(string text)
+    99	    {
+   100	        var slug = text.ToLowerInvariant();
+   101	        slug = Regex.Replace(slug, "[^a-z0-9]+", "-");
+   102	        slug = slug.Trim('-');
+   103	        return string.IsNullOrWhiteSpace(slug) ? "video" : slug;
+   104	    }
+   105	
+   106	    public static string EncodeUrlPath(string path)
+   107	    {
+   108	        var normalized = path.Replace('\\', '/');
+   109	        var segments = normalized.Split('/', StringSplitOptions.None);
+   110	        return string.Join("/", segments.Select(Uri.EscapeDataString));
+   111	    }
+   112	}

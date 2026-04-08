@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+set -euo pipefail
+HERE="$(dirname "$(readlink -f "$0")")"
+export DOTNET_BUNDLE_EXTRACT_BASE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/public-video-launcher"
+exec "$HERE/usr/bin/PublicVideoLauncher" "$@"

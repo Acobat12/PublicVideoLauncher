@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=@APP_NAME@
+Comment=Launch a public Cloudflare tunnel for a local video folder
+Exec=@EXECUTABLE@ %U
+Icon=@ICON_NAME@
+Terminal=false
+Categories=AudioVideo;Video;Utility;
+StartupNotify=true

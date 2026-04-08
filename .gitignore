@@ -1,0 +1,9 @@
+bin/
+obj/
+artifacts/
+.tools/
+.public-video-cache/
+*.user
+*.suo
+.DS_Store
+Thumbs.db

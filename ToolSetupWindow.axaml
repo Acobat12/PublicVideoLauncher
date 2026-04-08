@@ -1,0 +1,169 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="PublicVideoLauncher.ToolSetupWindow"
+        Title="Dependencies"
+        Width="980"
+        Height="860"
+        MinWidth="840"
+        MinHeight="680"
+        Background="#020817"
+        Foreground="#F8FAFC"
+        Icon="/Assets/AppIcon.png">
+
+  <Window.Styles>
+    <Style Selector="TextBlock.header">
+      <Setter Property="FontSize" Value="24"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+    </Style>
+
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="#93C5FD"/>
+    </Style>
+
+    <Style Selector="TextBlock.ok">
+      <Setter Property="Foreground" Value="#86EFAC"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+    </Style>
+
+    <Style Selector="TextBlock.warn">
+      <Setter Property="Foreground" Value="#FDE68A"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+    </Style>
+
+    <Style Selector="TextBox">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="Background" Value="#111827"/>
+      <Setter Property="BorderBrush" Value="#334155"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="8"/>
+      <Setter Property="Padding" Value="10,8"/>
+    </Style>
+
+    <Style Selector="Button">
+      <Setter Property="Foreground" Value="#FFFFFF"/>
+      <Setter Property="Background" Value="#334155"/>
+      <Setter Property="BorderBrush" Value="#475569"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="Padding" Value="14,10"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="#16A34A"/>
+      <Setter Property="BorderBrush" Value="#22C55E"/>
+    </Style>
+
+    <Style Selector="ProgressBar">
+      <Setter Property="Height" Value="10"/>
+      <Setter Property="Minimum" Value="0"/>
+      <Setter Property="Maximum" Value="100"/>
+    </Style>
+  </Window.Styles>
+
+  <Grid RowDefinitions="Auto,Auto,*,Auto" Margin="16" RowSpacing="12">
+    <StackPanel Grid.Row="0" Spacing="6">
+      <TextBlock Classes="header" Text="Helper tools"/>
+      <TextBlock x:Name="SummaryTextBlock"
+                 Classes="muted"
+                 Text="The program needs ffmpeg, caddy and cloudflared. Each supported tool can be installed from this window with progress."/>
+      <TextBlock x:Name="FolderTextBlock" Classes="muted" TextWrapping="Wrap"/>
+    </StackPanel>
+
+    <Border Grid.Row="1"
+            Background="#0B1220"
+            BorderBrush="#24324B"
+            BorderThickness="1"
+            CornerRadius="14"
+            Padding="12">
+      <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
+        <TextBox x:Name="ErrorTextBox"
+                 IsReadOnly="True"
+                 AcceptsReturn="True"
+                 TextWrapping="Wrap"
+                 MinHeight="76"
+                 Watermark="Last error will appear here if a tool failed to install or start..."/>
+        <StackPanel Grid.Column="1" Spacing="8" VerticalAlignment="Top">
+          <Button x:Name="RefreshButton" Content="Refresh"/>
+          <Button x:Name="InstallButton" Classes="primary" Content="Install all missing automatically"/>
+          <Button x:Name="CloseButton" Content="Close"/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto">
+      <StackPanel Spacing="12">
+        <Border Background="#0B1220" BorderBrush="#24324B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Text="FFmpeg" FontWeight="Bold" FontSize="18"/>
+                <TextBlock Text="Converts videos and builds MP4 cache files for playback and translation." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <TextBlock x:Name="FfmpegStatusTextBlock" Grid.Column="1" Classes="warn" Text="Missing" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBox x:Name="FfmpegPathTextBox" Grid.Row="1" IsReadOnly="True" Watermark="Not detected"/>
+            <TextBox x:Name="FfmpegHintTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82"/>
+            <TextBlock x:Name="FfmpegAutoTextBlock" Grid.Row="3" Classes="muted" TextWrapping="Wrap"/>
+            <ProgressBar x:Name="FfmpegProgressBar" Grid.Row="4" Value="0"/>
+            <TextBlock x:Name="FfmpegProgressTextBlock" Grid.Row="5" Classes="muted" Text="Waiting" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="FfmpegInstallButton" Classes="primary" Content="Install automatically"/>
+              <Button x:Name="FfmpegOpenButton" Content="Open FFmpeg page"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Background="#0B1220" BorderBrush="#24324B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Text="Caddy" FontWeight="Bold" FontSize="18"/>
+                <TextBlock Text="Runs the local web server that serves player.html and playlist.json." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <TextBlock x:Name="CaddyStatusTextBlock" Grid.Column="1" Classes="warn" Text="Missing" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBox x:Name="CaddyPathTextBox" Grid.Row="1" IsReadOnly="True" Watermark="Not detected"/>
+            <TextBox x:Name="CaddyHintTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82"/>
+            <TextBlock x:Name="CaddyAutoTextBlock" Grid.Row="3" Classes="muted" TextWrapping="Wrap"/>
+            <ProgressBar x:Name="CaddyProgressBar" Grid.Row="4" Value="0"/>
+            <TextBlock x:Name="CaddyProgressTextBlock" Grid.Row="5" Classes="muted" Text="Waiting" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="CaddyInstallButton" Classes="primary" Content="Install automatically"/>
+              <Button x:Name="CaddyOpenButton" Content="Open Caddy page"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Background="#0B1220" BorderBrush="#24324B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Text="Cloudflared" FontWeight="Bold" FontSize="18"/>
+                <TextBlock Text="Creates the public tunnel URL that exposes the local player to the internet." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <TextBlock x:Name="CloudflaredStatusTextBlock" Grid.Column="1" Classes="warn" Text="Missing" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBox x:Name="CloudflaredPathTextBox" Grid.Row="1" IsReadOnly="True" Watermark="Not detected"/>
+            <TextBox x:Name="CloudflaredHintTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82"/>
+            <TextBlock x:Name="CloudflaredAutoTextBlock" Grid.Row="3" Classes="muted" TextWrapping="Wrap"/>
+            <ProgressBar x:Name="CloudflaredProgressBar" Grid.Row="4" Value="0"/>
+            <TextBlock x:Name="CloudflaredProgressTextBlock" Grid.Row="5" Classes="muted" Text="Waiting" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="CloudflaredInstallButton" Classes="primary" Content="Install automatically"/>
+              <Button x:Name="CloudflaredOpenButton" Content="Open Cloudflared page"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+      </StackPanel>
+    </ScrollViewer>
+
+    <TextBlock Grid.Row="3"
+               Classes="muted"
+               Text="Tip: this window refreshes every 2 seconds. If you install a missing tool manually, the status updates automatically."/>
+  </Grid>
+</Window>

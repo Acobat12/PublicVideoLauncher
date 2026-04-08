@@ -1,0 +1,51 @@
+#define MyAppName "@APP_NAME@"
+#define MyAppVersion "@APP_VERSION@"
+#define MyAppPublisher "@APP_PUBLISHER@"
+#define MyAppURL "@APP_URL@"
+#define MyAppExeName "PublicVideoLauncher.exe"
+#define MyAppAssocName MyAppName + " Launcher"
+#define MyAppAssocExt ".pvl"
+#define MyAppAssocKey StringChange(MyAppAssocName, " ", "") + MyAppAssocExt
+#define MyAppId "@APP_ID@"
+#define MySourceDir "@PUBLISH_DIR@"
+#define MyOutputDir "@OUTPUT_DIR@"
+
+[Setup]
+AppId={#MyAppId}
+AppName={#MyAppName}
+AppVersion={#MyAppVersion}
+AppPublisher={#MyAppPublisher}
+AppPublisherURL={#MyAppURL}
+AppSupportURL={#MyAppURL}
+AppUpdatesURL={#MyAppURL}
+DefaultDirName={localappdata}\Programs\{#MyAppName}
+DefaultGroupName={#MyAppName}
+DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+ArchitecturesAllowed=@ARCH_ALLOWED@
+ArchitecturesInstallIn64BitMode=@ARCH_INSTALL_MODE@
+Compression=lzma
+SolidCompression=yes
+WizardStyle=modern
+OutputDir={#MyOutputDir}
+OutputBaseFilename=@OUTPUT_BASENAME@
+@SETUP_ICON_LINE@
+UninstallDisplayIcon={app}\{#MyAppExeName}
+ChangesAssociations=no
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+Source: "{#MySourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+
+[Icons]
+Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
