@@ -68,7 +68,7 @@ public sealed class ServerRunner
 
         _cloudflaredProcess = StartProcess(
             tools.CloudflaredPath,
-            new[] { "tunnel", "--url", localUrl, "--no-autoupdate" },
+            new[] { "tunnel", "--url", localUrl, "--no-autoupdate", "--protocol", "http2" },
             workspace.RootFolder,
             _cloudflaredStdoutFile,
             _cloudflaredStderrFile);
