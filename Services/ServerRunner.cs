@@ -159,18 +159,46 @@ public sealed class ServerRunner
         return false;
     }
 
-    private static async Task<string?> WaitForPublicUrlAsync(Process process, string stdoutPath, string stderrPath, CancellationToken cancellationToken)
+    private static async Task<string?> WaitForPublicUrlAsync(
+        Process process,
+        string stdoutPath,
+        string stderrPath,
+        CancellationToken cancellationToken)
     {
-        var regex = new Regex(@"https://[a-z0-9-]+\.trycloudflare\.com", RegexOptions.IgnoreCase | RegexOptions.Compiled);
+        var regex = new Regex(
+            @"https://[a-z0-9-]+\.trycloudflare\.com",
+            RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
-        for (var i = 0; i < 90; i++)
+        string? foundUrl = null;
+        string? foundHost = null;
+
+        for (var i = 0; i < 120; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             var text = ReadFileSafe(stdoutPath) + Environment.NewLine + ReadFileSafe(stderrPath);
-            var match = regex.Match(text);
-            if (match.Success)
-                return match.Value;
+
+            if (foundUrl is null)
+            {
+                var match = regex.Match(text);
+                if (match.Success)
+                {
+                    foundUrl = match.Value;
+                    try
+                    {
+                        foundHost = new Uri(foundUrl).Host;
+                    }
+                    catch
+                    {
+                        foundHost = null;
+                    }
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(foundHost) && IsHostResolvable(foundHost))
+            {
+                return foundUrl;
+            }
 
             if (process.HasExited)
                 break;
@@ -179,6 +207,19 @@ public sealed class ServerRunner
         }
 
         return null;
+    }
+
+    private static bool IsHostResolvable(string host)
+    {
+        try
+        {
+            var addresses = System.Net.Dns.GetHostAddresses(host);
+            return addresses is { Length: > 0 };
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static async Task PumpLogsAsync(Process? process, string? stdoutPath, string? stderrPath, Action<string> log, string prefix, CancellationToken cancellationToken)
