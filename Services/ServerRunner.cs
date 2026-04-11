@@ -78,7 +78,7 @@ public sealed class ServerRunner
         if (string.IsNullOrWhiteSpace(publicUrl))
         {
             throw new InvalidOperationException(
-                "Could not parse cloudflared public URL.\n\nSTDOUT:\n" + ReadFileSafe(_cloudflaredStdoutFile) +
+                "Cloudflared started, but public URL was not detected in logs.\n\nSTDOUT:\n" + ReadFileSafe(_cloudflaredStdoutFile) +
                 "\n\nSTDERR:\n" + ReadFileSafe(_cloudflaredStderrFile));
         }
 
@@ -195,7 +195,7 @@ public sealed class ServerRunner
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(foundHost) && IsHostResolvable(foundHost))
+            if (!string.IsNullOrWhiteSpace(foundHost))
             {
                 return foundUrl;
             }

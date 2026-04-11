@@ -10,7 +10,7 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <AssemblyName>PublicVideoLauncher</AssemblyName>
     <RootNamespace>PublicVideoLauncher</RootNamespace>
-    <Version Condition="'$(Version)' == ''">1.0.1</Version>
+    <Version Condition="'$(Version)' == ''">1.0.2</Version>
     <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">$(Version)</AssemblyVersion>
     <FileVersion Condition="'$(FileVersion)' == ''">$(Version)</FileVersion>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>

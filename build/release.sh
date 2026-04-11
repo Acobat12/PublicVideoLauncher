@@ -2,7 +2,7 @@
 set -euo pipefail
 
 CONFIGURATION="${CONFIGURATION:-Release}"
-VERSION="${VERSION:-1.0.1}"
+VERSION="${VERSION:-1.0.2}"
 APP_NAME="${APP_NAME:-PublicVideoLauncher}"
 SELF_CONTAINED="${SELF_CONTAINED:-true}"
 SINGLE_FILE="${SINGLE_FILE:-false}"

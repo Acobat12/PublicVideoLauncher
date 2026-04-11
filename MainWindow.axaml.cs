@@ -145,14 +145,7 @@ public partial class MainWindow : Window
 
         try
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = _publicUrl,
-                UseShellExecute = true,
-            });
-
-            AppendLog("Opening in default browser: " + _publicUrl);
-            SetSummary("Opening public URL...");
+            OpenUrl(_publicUrl);
         }
         catch (Exception ex)
         {
@@ -335,7 +328,9 @@ public partial class MainWindow : Window
 
             if (_autostartBrowserCheckBox.IsChecked == true)
             {
-                OpenUrlButton_OnClick(null, new RoutedEventArgs());
+                AppendLog("Tunnel URL detected and autostart is enabled.");
+                AppendLog("Waiting for DNS propagation...");
+                _ = OpenBrowserWhenDnsReadyAsync(_publicUrl!, _runCts?.Token ?? CancellationToken.None);
             }
         }
         catch (OperationCanceledException)
@@ -418,7 +413,7 @@ public partial class MainWindow : Window
     {
         _browseButton.IsEnabled = !busy;
         _scanButton.IsEnabled = !busy;
-        _fixDnsButton.IsEnabled = !busy;
+        _fixDnsButton.IsEnabled = true;
         _dependenciesButton.IsEnabled = !busy;
         _proxyModeCheckBox.IsEnabled = !busy && !_serverRunner.IsRunning;
         _portNumeric.IsEnabled = !busy && !_serverRunner.IsRunning;
@@ -499,6 +494,84 @@ public partial class MainWindow : Window
         ];
     }
 
+    private async Task OpenBrowserWhenDnsReadyAsync(string url, CancellationToken cancellationToken)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+        {
+            AppendLog("Autostart skipped: invalid public URL.");
+            return;
+        }
+    
+        var host = uri.Host;
+        AppendLog("Autostart waiting for DNS: " + host);
+
+        var resolved = await WaitUntilSystemDnsReady(host, TimeSpan.FromSeconds(60), cancellationToken);
+
+        if (cancellationToken.IsCancellationRequested)
+        {
+            AppendLog("Autostart canceled before browser open.");
+            return;
+        }
+
+        if (!resolved)
+        {
+            AppendLog("System DNS did not resolve host in time. Opening browser anyway: " + url);
+        }
+        else
+        {
+            AppendLog("System DNS resolved host. Opening browser: " + url);
+        }
+    
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            OpenUrl(url);
+        });
+    }
+    private async Task<bool> WaitUntilSystemDnsReady(string host, TimeSpan timeout, CancellationToken cancellationToken)
+    {
+        var started = DateTime.UtcNow;
+        var lastLoggedState = string.Empty;
+
+        while (DateTime.UtcNow - started < timeout)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var addresses = await Dns.GetHostAddressesAsync(host);
+
+                var usable = addresses?
+                    .Where(a => !IPAddress.IsLoopback(a))
+                    .Distinct()
+                    .ToArray();
+
+                if (usable is { Length: > 0 })
+                {
+                    AppendLog("System DNS resolved: " + string.Join(", ", usable.Select(x => x.ToString())));
+                    return true;
+                }
+
+                if (lastLoggedState != "empty")
+                {
+                    AppendLog("System DNS returned no usable addresses yet.");
+                    lastLoggedState = "empty";
+                }
+            }
+            catch
+            {
+                if (lastLoggedState != "not-resolved")
+                {
+                    AppendLog("System DNS: not resolved yet.");
+                    lastLoggedState = "not-resolved";
+                }
+            }
+
+            await Task.Delay(1500, cancellationToken);
+        }
+
+        return false;
+    }
+
     private async Task<string> RunDnsDiagnosticsAsync(string host)
     {
         var sb = new StringBuilder();
@@ -549,7 +622,8 @@ public partial class MainWindow : Window
         try
         {
             var addresses = await Dns.GetHostAddressesAsync(host);
-            return string.Join(", ", addresses.Select(x => x.ToString()));
+            var usable = addresses.Where(x => !IPAddress.IsLoopback(x)).ToArray();
+            return string.Join(", ", usable.Select(x => x.ToString()));
         }
         catch
         {
@@ -588,7 +662,17 @@ public partial class MainWindow : Window
             return string.Empty;
         }
     }
+    private void OpenUrl(string url)
+    {
+        Process.Start(new ProcessStartInfo
+        {
+            FileName = url,
+            UseShellExecute = true,
+        });
 
+        AppendLog("Opening in default browser: " + url);
+        SetSummary("Opening public URL...");
+    }
     private async Task ShowMessageAsync(string title, string message)
     {
         var dialog = new Window
