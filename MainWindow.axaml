@@ -39,6 +39,13 @@
     <Style Selector="CheckBox">
       <Setter Property="Foreground" Value="#E2E8F0"/>
     </Style>
+    <Style Selector="ComboBox">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="Background" Value="#0F172A"/>
+      <Setter Property="BorderBrush" Value="#334155"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="MinWidth" Value="200"/>
+    </Style>
 
     <Style Selector="Button">
       <Setter Property="Foreground" Value="#FFFFFF"/>
@@ -91,7 +98,7 @@
             BorderThickness="1"
             BorderBrush="#24324B"
             Background="#0B1220">
-      <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto,Auto"
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
             RowDefinitions="Auto,Auto"
             ColumnSpacing="10"
             RowSpacing="10">
@@ -117,28 +124,36 @@
                        Value="8000"
                        FormatString="0"/>
 
+        <TextBlock Grid.Row="0" Grid.Column="5" Text="Tunnel" FontWeight="Bold" VerticalAlignment="Center"/>
+
+        <ComboBox x:Name="TunnelProviderComboBox"
+                  Grid.Row="0"
+                  Grid.Column="6"
+                  SelectedIndex="0"
+                  VerticalAlignment="Center"/>
+
         <CheckBox x:Name="ProxyModeCheckBox"
                   Grid.Row="0"
-                  Grid.Column="5"
+                  Grid.Column="7"
                   IsChecked="True"
                   VerticalAlignment="Center"
                   Content="Proxy MP4 for translation"/>
 
         <CheckBox x:Name="AutostartBrowserCheckBox"
                   Grid.Row="0"
-                  Grid.Column="6"
+                  Grid.Column="8"
                   IsChecked="True"
                   VerticalAlignment="Center"
                   Content="Open browser after start"/>
 
-        <Button x:Name="ScanButton" Grid.Row="0" Grid.Column="7" Classes="primary" Content="Scan"/>
+        <Button x:Name="ScanButton" Grid.Row="0" Grid.Column="9" Classes="primary" Content="Scan"/>
 
         <TextBlock Grid.Row="1" Grid.Column="0" Text="Public URL" FontWeight="Bold" VerticalAlignment="Center"/>
 
         <TextBox x:Name="PublicUrlTextBox"
                  Grid.Row="1"
                  Grid.Column="1"
-                 Grid.ColumnSpan="7"
+                 Grid.ColumnSpan="9"
                  IsReadOnly="True"
                  Watermark="Public URL will appear here after start..."/>
       </Grid>

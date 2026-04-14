@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private readonly Button _fixDnsButton;
     private readonly Button _dependenciesButton;
     private readonly NumericUpDown _portNumeric;
+    private readonly ComboBox _tunnelProviderComboBox;
     private readonly CheckBox _proxyModeCheckBox;
     private readonly CheckBox _autostartBrowserCheckBox;
     private readonly Grid _detailedHeaderGrid;
@@ -49,6 +50,14 @@ public partial class MainWindow : Window
 
     private CancellationTokenSource? _runCts;
     private string? _publicUrl;
+    private readonly TunnelProviderOption[] _tunnelProviders =
+    [
+        new() { Key = "cloudflared", DisplayName = "Cloudflare Tunnel" },
+        new() { Key = "ngrok", DisplayName = "ngrok" },
+        new() { Key = "localhost.run", DisplayName = "localhost.run" },
+        new() { Key = "pinggy", DisplayName = "Pinggy" },
+        new() { Key = "tailscale funnel", DisplayName = "Tailscale Funnel" },
+    ];
 
     public MainWindow()
     {
@@ -64,6 +73,7 @@ public partial class MainWindow : Window
         _fixDnsButton = this.FindControl<Button>("FixDnsButton")!;
         _dependenciesButton = this.FindControl<Button>("DependenciesButton")!;
         _portNumeric = this.FindControl<NumericUpDown>("PortNumeric")!;
+        _tunnelProviderComboBox = this.FindControl<ComboBox>("TunnelProviderComboBox")!;
         _proxyModeCheckBox = this.FindControl<CheckBox>("ProxyModeCheckBox")!;
         _autostartBrowserCheckBox = this.FindControl<CheckBox>("AutostartBrowserCheckBox")!;
         _detailedHeaderGrid = this.FindControl<Grid>("DetailedHeaderGrid")!;
@@ -75,6 +85,8 @@ public partial class MainWindow : Window
         _summaryTextBlock = this.FindControl<TextBlock>("SummaryTextBlock")!;
 
         _videosListBox.ItemsSource = _videoItems;
+        _tunnelProviderComboBox.ItemsSource = _tunnelProviders;
+        _tunnelProviderComboBox.SelectedItem = _tunnelProviders[0];
 
         _browseButton.Click += BrowseButton_OnClick;
         _scanButton.Click += ScanButton_OnClick;
@@ -263,7 +275,10 @@ public partial class MainWindow : Window
         SetBusy(true, "Starting services...");
         try
         {
-            var toolStatusesBeforeStart = ToolResolver.InspectAll(folder);
+            var requiredToolNames = ToolResolver.GetRequiredToolNames(GetSelectedTunnelProvider().Key);
+            var toolStatusesBeforeStart = ToolResolver.InspectAll(folder)
+                .Where(x => requiredToolNames.Contains(x.Name, StringComparer.OrdinalIgnoreCase))
+                .ToArray();
             foreach (var missingTool in toolStatusesBeforeStart.Where(x => !x.IsInstalled))
             {
                 AppendLog($"Missing tool detected before start: {missingTool.DisplayName}.");
@@ -271,10 +286,15 @@ public partial class MainWindow : Window
             }
 
             AppendLog("Ensuring helper tools...");
-            var tools = await ToolResolver.EnsureAllAsync(folder, AppendLog, _runCts.Token);
+            var selectedTunnel = GetSelectedTunnelProvider();
+            AppendLog("Selected tunnel provider: " + selectedTunnel.DisplayName);
+            var tools = await ToolResolver.EnsureRequiredAsync(folder, selectedTunnel.Key, AppendLog, _runCts.Token);
             AppendLog("ffmpeg: " + tools.FfmpegPath);
             AppendLog("caddy: " + tools.CaddyPath);
-            AppendLog("cloudflared: " + tools.CloudflaredPath);
+            if (!string.IsNullOrWhiteSpace(tools.CloudflaredPath)) AppendLog("cloudflared: " + tools.CloudflaredPath);
+            if (!string.IsNullOrWhiteSpace(tools.NgrokPath)) AppendLog("ngrok: " + tools.NgrokPath);
+            if (!string.IsNullOrWhiteSpace(tools.SshPath)) AppendLog("ssh: " + tools.SshPath);
+            if (!string.IsNullOrWhiteSpace(tools.TailscalePath)) AppendLog("tailscale: " + tools.TailscalePath);
 
             var entriesRequiringCache = _workspace.Entries
                 .Where(x => !string.IsNullOrWhiteSpace(x.PlaybackCachePath) || !string.IsNullOrWhiteSpace(x.TranslationCachePath))
@@ -306,6 +326,7 @@ public partial class MainWindow : Window
             var session = await _serverRunner.StartAsync(
                 _workspace,
                 preferredPort,
+                selectedTunnel.Key,
                 tools,
                 AppendLog,
                 _runCts.Token,
@@ -324,7 +345,7 @@ public partial class MainWindow : Window
             }
 
             SetStatus("Running");
-            SetSummary($"Local: {session.LocalUrl} | Public tunnel is ready.");
+            SetSummary($"Local: {session.LocalUrl} | {selectedTunnel.DisplayName} is ready.");
 
             if (_autostartBrowserCheckBox.IsChecked == true)
             {
@@ -345,7 +366,10 @@ public partial class MainWindow : Window
             SetStatus("Stopped");
 
             var looksLikeToolIssue = ToolResolver.LooksLikeToolIssue(ex);
-            var currentToolStatuses = ToolResolver.InspectAll(folder);
+            var requiredToolNames = ToolResolver.GetRequiredToolNames(GetSelectedTunnelProvider().Key);
+            var currentToolStatuses = ToolResolver.InspectAll(folder)
+                .Where(x => requiredToolNames.Contains(x.Name, StringComparer.OrdinalIgnoreCase))
+                .ToArray();
             var hasMissingTools = currentToolStatuses.Any(x => !x.IsInstalled);
 
             if (looksLikeToolIssue || hasMissingTools)
@@ -392,6 +416,13 @@ public partial class MainWindow : Window
         }
     }
 
+
+    private TunnelProviderOption GetSelectedTunnelProvider()
+    {
+        return _tunnelProviderComboBox.SelectedItem as TunnelProviderOption
+            ?? _tunnelProviders[0];
+    }
+
     private async Task ShowDependencySetupWindowAsync(string folder, string? startupError)
     {
         var window = new ToolSetupWindow(folder, startupError, AppendLog);
@@ -417,6 +448,7 @@ public partial class MainWindow : Window
         _dependenciesButton.IsEnabled = !busy;
         _proxyModeCheckBox.IsEnabled = !busy && !_serverRunner.IsRunning;
         _portNumeric.IsEnabled = !busy && !_serverRunner.IsRunning;
+        _tunnelProviderComboBox.IsEnabled = !busy && !_serverRunner.IsRunning;
         _autostartBrowserCheckBox.IsEnabled = !busy;
 
         _startButton.IsEnabled = !busy && !_serverRunner.IsRunning;

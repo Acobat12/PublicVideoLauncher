@@ -18,7 +18,10 @@ namespace PublicVideoLauncher.Services;
 
 public sealed class ToolPaths
 {
-    public required string CloudflaredPath { get; init; }
+    public string? CloudflaredPath { get; init; }
+    public string? NgrokPath { get; init; }
+    public string? SshPath { get; init; }
+    public string? TailscalePath { get; init; }
     public required string CaddyPath { get; init; }
     public required string FfmpegPath { get; init; }
 }
@@ -38,7 +41,25 @@ public static class ToolResolver
             CreateToolStatus("ffmpeg", rootFolder),
             CreateToolStatus("caddy", rootFolder),
             CreateToolStatus("cloudflared", rootFolder),
+            CreateToolStatus("ngrok", rootFolder),
+            CreateToolStatus("ssh", rootFolder),
+            CreateToolStatus("tailscale", rootFolder),
         ];
+    }
+
+
+    public static string[] GetRequiredToolNames(string tunnelProvider)
+    {
+        var normalized = (tunnelProvider ?? string.Empty).Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            "cloudflare tunnel" or "cloudflared" => ["ffmpeg", "caddy", "cloudflared"],
+            "ngrok" => ["ffmpeg", "caddy", "ngrok"],
+            "localhost.run" => ["ffmpeg", "caddy", "ssh"],
+            "pinggy" => ["ffmpeg", "caddy", "ssh"],
+            "tailscale funnel" => ["ffmpeg", "caddy", "tailscale"],
+            _ => ["ffmpeg", "caddy"],
+        };
     }
 
     public static bool LooksLikeToolIssue(Exception ex)
@@ -47,6 +68,9 @@ public static class ToolResolver
         return text.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("caddy", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("cloudflared", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("ngrok", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("tailscale", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("ssh", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("install", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("download", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("GitHub asset", StringComparison.OrdinalIgnoreCase);
@@ -69,7 +93,7 @@ public static class ToolResolver
                 "ffmpeg" => await EnsureFfmpegAsync(rootFolder, log, cancellationToken, progress),
                 "caddy" => await EnsureCaddyAsync(rootFolder, log, cancellationToken, progress),
                 "cloudflared" => await EnsureCloudflaredAsync(rootFolder, log, cancellationToken, progress),
-                _ => throw new InvalidOperationException($"Unsupported tool: {toolName}")
+                _ => throw new InvalidOperationException($"Unsupported automatic install for tool: {toolName}")
             };
         }
         catch (Exception ex)
@@ -95,8 +119,9 @@ public static class ToolResolver
         }
     }
 
-    public static async Task<ToolPaths> EnsureAllAsync(
+    public static async Task<ToolPaths> EnsureRequiredAsync(
         string rootFolder,
+        string tunnelProvider,
         Action<string> log,
         CancellationToken cancellationToken = default)
     {
@@ -105,14 +130,49 @@ public static class ToolResolver
 
         var ffmpegPath = await EnsureFfmpegAsync(rootFolder, log, cancellationToken, progress: null);
         var caddyPath = await EnsureCaddyAsync(rootFolder, log, cancellationToken, progress: null);
-        var cloudflaredPath = await EnsureCloudflaredAsync(rootFolder, log, cancellationToken, progress: null);
+
+        string? cloudflaredPath = null;
+        string? ngrokPath = null;
+        string? sshPath = null;
+        string? tailscalePath = null;
+
+        switch ((tunnelProvider ?? string.Empty).Trim().ToLowerInvariant())
+        {
+            case "cloudflared":
+                cloudflaredPath = await EnsureCloudflaredAsync(rootFolder, log, cancellationToken, progress: null);
+                break;
+            case "ngrok":
+                ngrokPath = RequireInstalledTool("ngrok", rootFolder, "ngrok is required for the selected tunnel provider. Install ngrok, run ngrok config add-authtoken if needed, then try again.");
+                break;
+            case "localhost.run":
+            case "pinggy":
+                sshPath = RequireInstalledTool("ssh", rootFolder, "OpenSSH ssh client is required for the selected tunnel provider. Install ssh and try again.");
+                break;
+            case "tailscale funnel":
+                tailscalePath = RequireInstalledTool("tailscale", rootFolder, "Tailscale CLI is required for Tailscale Funnel. Install Tailscale, sign in, enable Funnel permissions, then try again.");
+                break;
+            default:
+                throw new InvalidOperationException($"Unsupported tunnel provider: {tunnelProvider}");
+        }
 
         return new ToolPaths
         {
             FfmpegPath = ffmpegPath,
             CaddyPath = caddyPath,
             CloudflaredPath = cloudflaredPath,
+            NgrokPath = ngrokPath,
+            SshPath = sshPath,
+            TailscalePath = tailscalePath,
         };
+    }
+
+    private static string RequireInstalledTool(string toolName, string rootFolder, string message)
+    {
+        var path = GetCommandPathIfExists(toolName, rootFolder);
+        if (string.IsNullOrWhiteSpace(path))
+            throw new FileNotFoundException(message);
+
+        return path;
     }
 
     private static async Task<string> EnsureFfmpegAsync(
@@ -213,11 +273,43 @@ public static class ToolResolver
             {
                 Name = "cloudflared",
                 DisplayName = "Cloudflared",
-                Description = "Creates the public tunnel URL so the local video player becomes reachable from the internet.",
+                Description = "Creates a public Cloudflare quick tunnel URL for the local player.",
                 DownloadUrl = "https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/",
                 InstallationHint = GetCloudflaredInstallationHint(rootFolder),
                 SupportsAutomaticInstall = true,
                 DetectedPath = GetCommandPathIfExists("cloudflared", rootFolder),
+            },
+            "ngrok" => new ToolStatus
+            {
+                Name = "ngrok",
+                DisplayName = "ngrok",
+                Description = "Creates a public HTTPS URL using the ngrok agent. Usually requires ngrok to be installed and authenticated.",
+                DownloadUrl = "https://ngrok.com/download",
+                InstallationHint = "Install ngrok manually, then run ngrok config add-authtoken if your account requires it. The app will detect ngrok automatically from PATH.",
+                SupportsAutomaticInstall = false,
+                DetectedPath = GetCommandPathIfExists("ngrok", rootFolder),
+            },
+            "ssh" => new ToolStatus
+            {
+                Name = "ssh",
+                DisplayName = "OpenSSH ssh",
+                Description = "Used for localhost.run and Pinggy SSH reverse tunnels.",
+                DownloadUrl = "https://learn.microsoft.com/windows-server/administration/openssh/openssh_install_firstuse",
+                InstallationHint = OperatingSystem.IsWindows()
+                    ? "Windows: install the built-in OpenSSH Client optional feature if ssh.exe is missing. The app will detect ssh automatically from PATH."
+                    : "Linux/macOS: ssh is usually already installed. If missing, install the OpenSSH client package and retry.",
+                SupportsAutomaticInstall = false,
+                DetectedPath = GetCommandPathIfExists("ssh", rootFolder),
+            },
+            "tailscale" => new ToolStatus
+            {
+                Name = "tailscale",
+                DisplayName = "Tailscale",
+                Description = "Used for Tailscale Funnel public HTTPS URLs. Requires a signed-in Tailscale node with Funnel permissions.",
+                DownloadUrl = "https://tailscale.com/download",
+                InstallationHint = "Install Tailscale, sign in, and make sure Funnel is allowed for your tailnet. The app will detect the tailscale CLI automatically from PATH.",
+                SupportsAutomaticInstall = false,
+                DetectedPath = GetCommandPathIfExists("tailscale", rootFolder),
             },
             _ => throw new InvalidOperationException($"Unsupported tool: {toolName}")
         };
@@ -267,14 +359,14 @@ public static class ToolResolver
                 ? Path.Combine(toolsRoot, "cloudflared", "cloudflared.exe")
                 : Path.Combine(toolsRoot, "cloudflared", "cloudflared"),
 
-            _ => throw new InvalidOperationException($"Unsupported tool: {toolName}")
+            _ => string.Empty
         };
     }
 
     private static string? GetCommandPathIfExists(string toolName, string rootFolder)
     {
         var directPortable = GetPortableToolPath(toolName, rootFolder);
-        if (File.Exists(directPortable))
+        if (!string.IsNullOrWhiteSpace(directPortable) && File.Exists(directPortable))
             return directPortable;
 
         var extraPortableCandidates = toolName switch

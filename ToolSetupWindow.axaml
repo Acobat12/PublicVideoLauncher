@@ -70,7 +70,7 @@
       <TextBlock Classes="header" Text="Helper tools"/>
       <TextBlock x:Name="SummaryTextBlock"
                  Classes="muted"
-                 Text="The program needs ffmpeg, caddy and cloudflared. Each supported tool can be installed from this window with progress."/>
+                 Text="The program needs ffmpeg, caddy, and one tunnel backend. cloudflared can be installed automatically here; ngrok, OpenSSH ssh, and Tailscale are detected if already installed."/>
       <TextBlock x:Name="FolderTextBlock" Classes="muted" TextWrapping="Wrap"/>
     </StackPanel>
 
@@ -159,7 +159,70 @@
             </StackPanel>
           </Grid>
         </Border>
-      </StackPanel>
+      
+        <Border Background="#0B1220" BorderBrush="#24324B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Text="ngrok" FontWeight="Bold" FontSize="18"/>
+                <TextBlock Text="Creates a public HTTPS URL with the ngrok agent. Usually requires ngrok installation and account authentication." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <TextBlock x:Name="NgrokStatusTextBlock" Grid.Column="1" Classes="warn" Text="Missing" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBox x:Name="NgrokPathTextBox" Grid.Row="1" IsReadOnly="True" Watermark="Not detected"/>
+            <TextBox x:Name="NgrokHintTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82"/>
+            <TextBlock x:Name="NgrokAutoTextBlock" Grid.Row="3" Classes="muted" TextWrapping="Wrap"/>
+            <ProgressBar x:Name="NgrokProgressBar" Grid.Row="4" Value="0"/>
+            <TextBlock x:Name="NgrokProgressTextBlock" Grid.Row="5" Classes="muted" Text="Waiting" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="NgrokInstallButton" Classes="primary" Content="Install automatically"/>
+              <Button x:Name="NgrokOpenButton" Content="Open ngrok page"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Background="#0B1220" BorderBrush="#24324B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Text="OpenSSH ssh" FontWeight="Bold" FontSize="18"/>
+                <TextBlock Text="Used by localhost.run and Pinggy because both can create tunnels through a reverse SSH command." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <TextBlock x:Name="SshStatusTextBlock" Grid.Column="1" Classes="warn" Text="Missing" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBox x:Name="SshPathTextBox" Grid.Row="1" IsReadOnly="True" Watermark="Not detected"/>
+            <TextBox x:Name="SshHintTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82"/>
+            <TextBlock x:Name="SshAutoTextBlock" Grid.Row="3" Classes="muted" TextWrapping="Wrap"/>
+            <ProgressBar x:Name="SshProgressBar" Grid.Row="4" Value="0"/>
+            <TextBlock x:Name="SshProgressTextBlock" Grid.Row="5" Classes="muted" Text="Waiting" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="SshInstallButton" Classes="primary" Content="Install automatically"/>
+              <Button x:Name="SshOpenButton" Content="Open OpenSSH page"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+
+        <Border Background="#0B1220" BorderBrush="#24324B" BorderThickness="1" CornerRadius="14" Padding="14">
+          <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
+            <Grid ColumnDefinitions="*,Auto" ColumnSpacing="10">
+              <StackPanel>
+                <TextBlock Text="Tailscale" FontWeight="Bold" FontSize="18"/>
+                <TextBlock Text="Used for Tailscale Funnel public URLs. Requires a signed-in node and Funnel permission in the tailnet." Classes="muted" TextWrapping="Wrap"/>
+              </StackPanel>
+              <TextBlock x:Name="TailscaleStatusTextBlock" Grid.Column="1" Classes="warn" Text="Missing" VerticalAlignment="Center"/>
+            </Grid>
+            <TextBox x:Name="TailscalePathTextBox" Grid.Row="1" IsReadOnly="True" Watermark="Not detected"/>
+            <TextBox x:Name="TailscaleHintTextBox" Grid.Row="2" IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="82"/>
+            <TextBlock x:Name="TailscaleAutoTextBlock" Grid.Row="3" Classes="muted" TextWrapping="Wrap"/>
+            <ProgressBar x:Name="TailscaleProgressBar" Grid.Row="4" Value="0"/>
+            <TextBlock x:Name="TailscaleProgressTextBlock" Grid.Row="5" Classes="muted" Text="Waiting" TextWrapping="Wrap"/>
+            <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
+              <Button x:Name="TailscaleInstallButton" Classes="primary" Content="Install automatically"/>
+              <Button x:Name="TailscaleOpenButton" Content="Open Tailscale page"/>
+            </StackPanel>
+          </Grid>
+        </Border>
+</StackPanel>
     </ScrollViewer>
 
     <TextBlock Grid.Row="3"
