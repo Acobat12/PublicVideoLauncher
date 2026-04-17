@@ -7,11 +7,14 @@ using Avalonia.Threading;
 using PublicVideoLauncher.Models;
 using PublicVideoLauncher.Services;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
+using System.Text.Json;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -33,6 +36,7 @@ public partial class MainWindow : Window
     private readonly NumericUpDown _portNumeric;
     private readonly CheckBox _proxyModeCheckBox;
     private readonly CheckBox _autostartBrowserCheckBox;
+    private readonly CheckBox _mergeTranslationCheckBox;
     private readonly Grid _detailedHeaderGrid;
     private readonly Grid _simpleHeaderGrid;
     private readonly ListBox _videosListBox;
@@ -47,8 +51,20 @@ public partial class MainWindow : Window
     private readonly PlayerFilesService _playerFilesService = new();
     private readonly ServerRunner _serverRunner = new();
 
+    private readonly SemaphoreSlim _autoMergeSemaphore = new(1, 1);
+    private readonly ConcurrentDictionary<string, DateTime> _autoMergeEventTimes = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HttpClient _translationHttpClient = new(new HttpClientHandler { AllowAutoRedirect = true });
+
     private CancellationTokenSource? _runCts;
+    private CancellationTokenSource? _downloadsWatcherCts;
+    private FileSystemWatcher? _downloadsWatcher;
+    private CancellationTokenSource? _translationCallbackCts;
+    private HttpListener? _translationCallbackListener;
+    private Task? _translationCallbackLoopTask;
+    private string? _translationCallbackUrl;
     private string? _publicUrl;
+    private string? _lastAutoMergedAudioPath;
+    private DateTime _lastAutoMergedAtUtc;
 
     public MainWindow()
     {
@@ -66,6 +82,7 @@ public partial class MainWindow : Window
         _portNumeric = this.FindControl<NumericUpDown>("PortNumeric")!;
         _proxyModeCheckBox = this.FindControl<CheckBox>("ProxyModeCheckBox")!;
         _autostartBrowserCheckBox = this.FindControl<CheckBox>("AutostartBrowserCheckBox")!;
+        _mergeTranslationCheckBox = this.FindControl<CheckBox>("MergeTranslationCheckBox")!;
         _detailedHeaderGrid = this.FindControl<Grid>("DetailedHeaderGrid")!;
         _simpleHeaderGrid = this.FindControl<Grid>("SimpleHeaderGrid")!;
         _videosListBox = this.FindControl<ListBox>("VideosListBox")!;
@@ -84,6 +101,8 @@ public partial class MainWindow : Window
         _openUrlButton.Click += OpenUrlButton_OnClick;
         _fixDnsButton.Click += FixDnsButton_OnClick;
         _dependenciesButton.Click += DependenciesButton_OnClick;
+        _mergeTranslationCheckBox.Checked += MergeTranslationCheckBox_OnChanged;
+        _mergeTranslationCheckBox.Unchecked += MergeTranslationCheckBox_OnChanged;
         Closing += MainWindow_Closing;
     }
 
@@ -194,7 +213,43 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Closing(object? sender, WindowClosingEventArgs e)
     {
-        try { await StopAsync(); } catch { }
+        try
+        {
+            StopAutoMergeWatcher();
+            await StopTranslationCallbackServerAsync();
+            try { await StopAsync(); } catch { }
+        }
+        finally
+        {
+            _translationHttpClient.Dispose();
+            _autoMergeSemaphore.Dispose();
+        }
+    }
+
+    private void MergeTranslationCheckBox_OnChanged(object? sender, RoutedEventArgs e)
+    {
+        if (_mergeTranslationCheckBox.IsChecked == true)
+        {
+            if (_serverRunner.IsRunning)
+            {
+                try
+                {
+                    StartAutoMergeWatcher();
+                    SetSummary("Автоподхват перевода включён.");
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("Auto-merge watcher failed to start: " + ex);
+                    _ = ShowMessageAsync("Автоподхват перевода", ex.Message);
+                }
+            }
+        }
+        else
+        {
+            StopAutoMergeWatcher();
+            if (_serverRunner.IsRunning)
+                SetSummary("Автоподхват перевода выключен.");
+        }
     }
 
     private async Task ScanAsync()
@@ -293,7 +348,8 @@ public partial class MainWindow : Window
             RenderVideos();
 
             AppendLog("Writing playlist.json and player.html...");
-            await _playerFilesService.WriteAllAsync(folder, _workspace.Entries, _runCts.Token);
+            await EnsureTranslationCallbackServerAsync();
+            await _playerFilesService.WriteAllAsync(folder, _workspace.Entries, "/translation-ready", _runCts.Token);
 
             AppendLog("Starting local server and tunnel...");
             var preferredPort = (int)(_portNumeric.Value ?? 8000m);
@@ -309,7 +365,8 @@ public partial class MainWindow : Window
                 tools,
                 AppendLog,
                 _runCts.Token,
-                selectedEntry?.PlaybackUrl);
+                selectedEntry?.PlaybackUrl,
+                GetTranslationCallbackPort());
 
             _publicUrl = session.PublicUrl;
             _publicUrlTextBox.Text = _publicUrl;
@@ -331,6 +388,16 @@ public partial class MainWindow : Window
                 AppendLog("Tunnel URL detected and autostart is enabled.");
                 AppendLog("Waiting for DNS propagation...");
                 _ = OpenBrowserWhenDnsReadyAsync(_publicUrl!, _runCts?.Token ?? CancellationToken.None);
+            }
+
+            if (_mergeTranslationCheckBox.IsChecked == true)
+            {
+                StartAutoMergeWatcher();
+                AppendLog("Translation pipeline is active. Waiting for direct translation URLs. Downloads watcher is only a fallback.");
+            }
+            else
+            {
+                StopAutoMergeWatcher();
             }
         }
         catch (OperationCanceledException)
@@ -369,6 +436,8 @@ public partial class MainWindow : Window
     {
         try
         {
+            StopAutoMergeWatcher();
+            await StopTranslationCallbackServerAsync();
             _runCts?.Cancel();
             await _serverRunner.StopAsync(AppendLog);
             SetStatus("Idle");
@@ -392,10 +461,501 @@ public partial class MainWindow : Window
         }
     }
 
+
+    private int? GetTranslationCallbackPort()
+    {
+        if (string.IsNullOrWhiteSpace(_translationCallbackUrl))
+            return null;
+
+        return Uri.TryCreate(_translationCallbackUrl, UriKind.Absolute, out var uri) ? uri.Port : null;
+    }
+
     private async Task ShowDependencySetupWindowAsync(string folder, string? startupError)
     {
         var window = new ToolSetupWindow(folder, startupError, AppendLog);
         await window.ShowDialog(this);
+    }
+
+    private async Task EnsureTranslationCallbackServerAsync()
+    {
+        if (_translationCallbackListener is not null && _translationCallbackCts is { IsCancellationRequested: false } && !string.IsNullOrWhiteSpace(_translationCallbackUrl))
+            return;
+
+        await StopTranslationCallbackServerAsync();
+
+        var port = PortHelper.GetFreeTcpPort(18761, 100);
+        var listener = new HttpListener();
+        listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+        listener.Prefixes.Add($"http://localhost:{port}/");
+        listener.Start();
+
+        _translationCallbackListener = listener;
+        _translationCallbackCts = new CancellationTokenSource();
+        _translationCallbackUrl = $"http://127.0.0.1:{port}/translation-ready";
+        _translationCallbackLoopTask = Task.Run(() => RunTranslationCallbackLoopAsync(listener, _translationCallbackCts.Token));
+
+        AppendLog("Translation callback endpoint is ready: " + _translationCallbackUrl);
+    }
+
+    private async Task StopTranslationCallbackServerAsync()
+    {
+        var cts = _translationCallbackCts;
+        var listener = _translationCallbackListener;
+        var loopTask = _translationCallbackLoopTask;
+
+        _translationCallbackCts = null;
+        _translationCallbackListener = null;
+        _translationCallbackLoopTask = null;
+        _translationCallbackUrl = null;
+
+        try { cts?.Cancel(); } catch { }
+        try { listener?.Stop(); } catch { }
+        try { listener?.Close(); } catch { }
+
+        if (loopTask is not null)
+        {
+            try { await loopTask; }
+            catch (OperationCanceledException) { }
+            catch (ObjectDisposedException) { }
+            catch (HttpListenerException) { }
+        }
+
+        cts?.Dispose();
+    }
+
+    private async Task RunTranslationCallbackLoopAsync(HttpListener listener, CancellationToken cancellationToken)
+    {
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            HttpListenerContext? context = null;
+            try
+            {
+                context = await listener.GetContextAsync();
+            }
+            catch (ObjectDisposedException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (HttpListenerException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+            catch (HttpListenerException)
+            {
+                break;
+            }
+
+            _ = Task.Run(() => HandleTranslationCallbackAsync(context, cancellationToken), cancellationToken);
+        }
+    }
+
+    private async Task HandleTranslationCallbackAsync(HttpListenerContext context, CancellationToken cancellationToken)
+    {
+        try
+        {
+            context.Response.Headers["Access-Control-Allow-Origin"] = "*";
+            context.Response.Headers["Access-Control-Allow-Headers"] = "content-type";
+            context.Response.Headers["Access-Control-Allow-Methods"] = "POST, OPTIONS";
+
+            if (context.Request.HttpMethod.Equals("OPTIONS", StringComparison.OrdinalIgnoreCase))
+            {
+                context.Response.StatusCode = 204;
+                context.Response.Close();
+                return;
+            }
+
+            if (!context.Request.Url?.AbsolutePath.Equals("/translation-ready", StringComparison.OrdinalIgnoreCase) ?? true)
+            {
+                context.Response.StatusCode = 404;
+                context.Response.Close();
+                return;
+            }
+
+            if (!context.Request.HttpMethod.Equals("POST", StringComparison.OrdinalIgnoreCase))
+            {
+                context.Response.StatusCode = 405;
+                context.Response.Close();
+                return;
+            }
+
+            TranslationCallbackPayload? payload;
+            using (var reader = new StreamReader(context.Request.InputStream, context.Request.ContentEncoding ?? Encoding.UTF8))
+            {
+                var body = await reader.ReadToEndAsync(cancellationToken);
+                payload = JsonSerializer.Deserialize<TranslationCallbackPayload>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
+            }
+
+            if (payload is null || string.IsNullOrWhiteSpace(payload.Url))
+            {
+                context.Response.StatusCode = 400;
+                await WriteJsonResponseAsync(context.Response, "{\"ok\":false,\"error\":\"translation url is missing\"}");
+                return;
+            }
+
+            AppendLog("Received translation URL from player: " + payload.Url);
+            context.Response.StatusCode = 202;
+            await WriteJsonResponseAsync(context.Response, "{\"ok\":true}");
+
+            _ = Task.Run(() => TryAutoMergeFromTranslationUrlAsync(payload, _translationCallbackCts?.Token ?? CancellationToken.None));
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Translation callback handling failed: " + ex);
+            try
+            {
+                context.Response.StatusCode = 500;
+                await WriteJsonResponseAsync(context.Response, "{\"ok\":false}");
+            }
+            catch { }
+        }
+    }
+
+    private static async Task WriteJsonResponseAsync(HttpListenerResponse response, string json)
+    {
+        response.ContentType = "application/json; charset=utf-8";
+        var bytes = Encoding.UTF8.GetBytes(json);
+        response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
+        response.Close();
+    }
+
+    private void StartAutoMergeWatcher()
+    {
+        StopAutoMergeWatcher();
+
+        var downloadsFolder = GetDownloadsFolderPath();
+        if (string.IsNullOrWhiteSpace(downloadsFolder) || !Directory.Exists(downloadsFolder))
+        {
+            AppendLog("Downloads fallback is unavailable. Direct translation URL pipeline will stay active.");
+            return;
+        }
+
+        _downloadsWatcherCts = new CancellationTokenSource();
+        _downloadsWatcher = new FileSystemWatcher(downloadsFolder)
+        {
+            IncludeSubdirectories = false,
+            Filter = "*.*",
+            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
+            EnableRaisingEvents = true,
+        };
+
+        _downloadsWatcher.Created += DownloadsWatcher_OnChanged;
+        _downloadsWatcher.Changed += DownloadsWatcher_OnChanged;
+        _downloadsWatcher.Renamed += DownloadsWatcher_OnRenamed;
+
+        AppendLog("Watching Downloads as fallback for translated audio: " + downloadsFolder);
+    }
+
+    private void StopAutoMergeWatcher()
+    {
+        _downloadsWatcherCts?.Cancel();
+        _downloadsWatcherCts?.Dispose();
+        _downloadsWatcherCts = null;
+
+        if (_downloadsWatcher is not null)
+        {
+            _downloadsWatcher.EnableRaisingEvents = false;
+            _downloadsWatcher.Created -= DownloadsWatcher_OnChanged;
+            _downloadsWatcher.Changed -= DownloadsWatcher_OnChanged;
+            _downloadsWatcher.Renamed -= DownloadsWatcher_OnRenamed;
+            _downloadsWatcher.Dispose();
+            _downloadsWatcher = null;
+        }
+
+        _autoMergeEventTimes.Clear();
+    }
+
+    private void DownloadsWatcher_OnChanged(object sender, FileSystemEventArgs e) => QueueAutoMerge(e.FullPath);
+
+    private void DownloadsWatcher_OnRenamed(object sender, RenamedEventArgs e) => QueueAutoMerge(e.FullPath);
+
+    private void QueueAutoMerge(string? fullPath)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath) || !IsSupportedTranslatedAudio(fullPath))
+            return;
+
+        var now = DateTime.UtcNow;
+        if (_autoMergeEventTimes.TryGetValue(fullPath, out var lastEventUtc) && (now - lastEventUtc) < TimeSpan.FromSeconds(3))
+            return;
+
+        _autoMergeEventTimes[fullPath] = now;
+        _ = Task.Run(() => TryAutoMergeDownloadedAudioAsync(fullPath, _downloadsWatcherCts?.Token ?? CancellationToken.None));
+    }
+
+    private async Task TryAutoMergeDownloadedAudioAsync(string translatedAudioPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(1200, cancellationToken);
+            if (!await WaitForFileReadyAsync(translatedAudioPath, cancellationToken))
+                return;
+
+            var callbackPayload = new TranslationCallbackPayload
+            {
+                Url = new Uri(translatedAudioPath).AbsoluteUri,
+                VideoSrc = null,
+                VideoTitle = Path.GetFileNameWithoutExtension(translatedAudioPath),
+                SuggestedFileName = Path.GetFileName(translatedAudioPath),
+            };
+
+            await TryAutoMergeCoreAsync(
+                callbackPayload,
+                cancellationToken,
+                async (storedAudioPath, _, innerToken) =>
+                {
+                    File.Copy(translatedAudioPath, storedAudioPath, true);
+                    await Task.CompletedTask;
+                    AppendLog("Copied translated audio to: " + storedAudioPath);
+                    return translatedAudioPath;
+                });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Auto-merge failed: " + ex);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _ = ShowMessageAsync("Автосборка перевода", ex.Message);
+            });
+        }
+    }
+
+    private async Task TryAutoMergeFromTranslationUrlAsync(TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await TryAutoMergeCoreAsync(
+                payload,
+                cancellationToken,
+                async (storedAudioPath, sourceEntry, innerToken) =>
+                {
+                    await DownloadTranslationAudioAsync(payload, storedAudioPath, innerToken);
+                    AppendLog("Downloaded translated audio to: " + storedAudioPath);
+                    return payload.Url;
+                });
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Direct translation pipeline failed: " + ex);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _ = ShowMessageAsync("Автосборка перевода", ex.Message);
+            });
+        }
+    }
+
+    private async Task TryAutoMergeCoreAsync(
+        TranslationCallbackPayload payload,
+        CancellationToken cancellationToken,
+        Func<string, VideoEntry, CancellationToken, Task<string>> acquireAudioAsync)
+    {
+        await _autoMergeSemaphore.WaitAsync(cancellationToken);
+        try
+        {
+            var autoMergeEnabled = await Dispatcher.UIThread.InvokeAsync(() => _mergeTranslationCheckBox.IsChecked == true);
+            if (!_serverRunner.IsRunning)
+                return;
+
+            if (!string.IsNullOrWhiteSpace(payload.Url)
+                && string.Equals(_lastAutoMergedAudioPath, payload.Url, StringComparison.OrdinalIgnoreCase)
+                && DateTime.UtcNow - _lastAutoMergedAtUtc < TimeSpan.FromSeconds(30))
+            {
+                return;
+            }
+
+            var selectedEntry = await Dispatcher.UIThread.InvokeAsync(() => _videosListBox.SelectedItem as VideoEntry);
+            var targetEntry = ResolveTargetVideoEntry(payload, selectedEntry);
+            if (targetEntry is null)
+            {
+                AppendLog("Auto-merge skipped: no matching video was found for the translated audio.");
+                return;
+            }
+
+            var folder = await Dispatcher.UIThread.InvokeAsync(() => (_folderTextBox.Text ?? string.Empty).Trim());
+            if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+            {
+                AppendLog("Auto-merge skipped: working folder is unavailable.");
+                return;
+            }
+
+            await Dispatcher.UIThread.InvokeAsync(() => SetBusy(true, "Автосборка перевода..."));
+            SetSummary("Перевод найден. Собираю итоговый файл...");
+
+            var tools = await ToolResolver.EnsureAllAsync(folder, AppendLog, cancellationToken);
+
+            var storedAudioPath = BuildStoredTranslatedAudioPath(folder, targetEntry.FileName, payload.SuggestedFileName ?? payload.Url);
+            Directory.CreateDirectory(Path.GetDirectoryName(storedAudioPath)!);
+            var sourceId = await acquireAudioAsync(storedAudioPath, targetEntry, cancellationToken);
+
+            _lastAutoMergedAudioPath = sourceId;
+            _lastAutoMergedAtUtc = DateTime.UtcNow;
+
+            if (!autoMergeEnabled)
+            {
+                AppendLog("Translated audio saved to: " + storedAudioPath);
+                SetStatus("Running");
+                SetSummary("Перевод получен и сохранён. Автосклейка отключена.");
+                return;
+            }
+
+            var outputFolder = Path.Combine(folder, "merged_output");
+            var outputPath = Path.Combine(outputFolder, Path.GetFileNameWithoutExtension(targetEntry.FileName) + ".translated.mp4");
+
+            await _ffmpegService.MergeVideoWithExternalAudioAsync(
+                tools.FfmpegPath,
+                targetEntry.FullPath,
+                storedAudioPath,
+                outputPath,
+                AppendLog,
+                cancellationToken);
+
+            SetStatus("Running");
+            SetSummary("Перевод подхвачен автоматически. Итоговый файл сохранён в merged_output.");
+        }
+        finally
+        {
+            await Dispatcher.UIThread.InvokeAsync(() => SetBusy(false));
+            _autoMergeSemaphore.Release();
+        }
+    }
+
+    private VideoEntry? ResolveTargetVideoEntry(TranslationCallbackPayload payload, VideoEntry? selectedEntry)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.VideoSrc))
+        {
+            var normalized = NormalizeVideoSrc(payload.VideoSrc);
+            var matched = _workspace.Entries.FirstOrDefault(x =>
+                string.Equals(NormalizeVideoSrc(x.PlaybackUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(NormalizeVideoSrc(x.TranslationUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(NormalizeVideoSrc(x.OriginalUrl), normalized, StringComparison.OrdinalIgnoreCase));
+            if (matched is not null)
+                return matched;
+        }
+
+        return selectedEntry;
+    }
+
+    private static string NormalizeVideoSrc(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return string.Empty;
+
+        var trimmed = value.Trim();
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absoluteUri))
+            return absoluteUri.PathAndQuery.Trim();
+
+        return trimmed.TrimStart('.');
+    }
+
+    private async Task DownloadTranslationAudioAsync(TranslationCallbackPayload payload, string destinationPath, CancellationToken cancellationToken)
+    {
+        Directory.CreateDirectory(Path.GetDirectoryName(destinationPath)!);
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, payload.Url);
+        request.Headers.Referrer = Uri.TryCreate(_publicUrl, UriKind.Absolute, out var publicUri) ? publicUri : null;
+        request.Headers.UserAgent.ParseAdd("PublicVideoLauncher/1.0");
+
+        using var response = await _translationHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        response.EnsureSuccessStatusCode();
+
+        await using var input = await response.Content.ReadAsStreamAsync(cancellationToken);
+        await using var output = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
+        await input.CopyToAsync(output, cancellationToken);
+    }
+
+    private static string BuildStoredTranslatedAudioPath(string rootFolder, string videoFileName, string translatedAudioSource)
+    {
+        var extension = GetTranslatedAudioExtension(translatedAudioSource);
+        var baseName = Path.GetFileNameWithoutExtension(videoFileName);
+        var outputFolder = Path.Combine(rootFolder, "translated_audio");
+        return Path.Combine(outputFolder, baseName + ".translated" + extension);
+    }
+
+    private static string GetTranslatedAudioExtension(string translatedAudioSource)
+    {
+        var extension = Path.GetExtension(translatedAudioSource);
+        if (string.IsNullOrWhiteSpace(extension) && Uri.TryCreate(translatedAudioSource, UriKind.Absolute, out var uri))
+            extension = Path.GetExtension(uri.AbsolutePath);
+
+        return string.IsNullOrWhiteSpace(extension) ? ".mp3" : extension;
+    }
+
+    private static async Task<bool> WaitForFileReadyAsync(string path, CancellationToken cancellationToken)
+    {
+        for (var attempt = 0; attempt < 15; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (!File.Exists(path))
+            {
+                await Task.Delay(400, cancellationToken);
+                continue;
+            }
+
+            try
+            {
+                var initialLength = new FileInfo(path).Length;
+                await Task.Delay(700, cancellationToken);
+                var nextLength = new FileInfo(path).Length;
+                if (initialLength != nextLength || nextLength <= 0)
+                    continue;
+
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                return stream.Length > 0;
+            }
+            catch (IOException)
+            {
+                await Task.Delay(500, cancellationToken);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                await Task.Delay(500, cancellationToken);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsSupportedTranslatedAudio(string path)
+    {
+        var extension = Path.GetExtension(path);
+        return extension.Equals(".mp3", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".wav", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".m4a", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".aac", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".flac", StringComparison.OrdinalIgnoreCase)
+            || extension.Equals(".ogg", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private sealed class TranslationCallbackPayload
+    {
+        public string Url { get; set; } = string.Empty;
+        public string? VideoSrc { get; set; }
+        public string? VideoTitle { get; set; }
+        public string? SuggestedFileName { get; set; }
+    }
+
+    private static string? GetDownloadsFolderPath()
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(home))
+        {
+            var downloads = Path.Combine(home, "Downloads");
+            if (Directory.Exists(downloads))
+                return downloads;
+
+            downloads = Path.Combine(home, "Загрузки");
+            if (Directory.Exists(downloads))
+                return downloads;
+        }
+
+        var fallback = Environment.GetFolderPath(Environment.SpecialFolder.Personal);
+        return Directory.Exists(fallback) ? fallback : null;
     }
 
     private void RenderVideos()
@@ -415,6 +975,7 @@ public partial class MainWindow : Window
         _scanButton.IsEnabled = !busy;
         _fixDnsButton.IsEnabled = true;
         _dependenciesButton.IsEnabled = !busy;
+        _mergeTranslationCheckBox.IsEnabled = !busy;
         _proxyModeCheckBox.IsEnabled = !busy && !_serverRunner.IsRunning;
         _portNumeric.IsEnabled = !busy && !_serverRunner.IsRunning;
         _autostartBrowserCheckBox.IsEnabled = !busy;

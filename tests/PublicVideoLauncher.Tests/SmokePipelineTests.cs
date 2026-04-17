@@ -29,7 +29,7 @@ public sealed class SmokePipelineTests
             Assert.Contains(workspace.Entries, x => x.FileName == "Clip Two.mp4" && x.PlaybackUrl == "/Clip%20Two.mp4" && x.TranslationUrl == "/Clip%20Two.mp4");
 
             var service = new PlayerFilesService();
-            await service.WriteAllAsync(root, workspace.Entries, CancellationToken.None);
+            await service.WriteAllAsync(root, workspace.Entries, null, CancellationToken.None);
 
             var playlistPath = Path.Combine(root, "playlist.json");
             var playerPath = Path.Combine(root, "player.html");

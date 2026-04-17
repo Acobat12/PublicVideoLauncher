@@ -101,6 +101,34 @@ public sealed class FfmpegService
             outputPath,
         }, outputPath, cancellationToken);
 
+    public async Task MergeVideoWithExternalAudioAsync(
+        string ffmpegPath,
+        string videoPath,
+        string translatedAudioPath,
+        string outputPath,
+        Action<string> log,
+        CancellationToken cancellationToken)
+    {
+        log($"Merging translated audio into video: {Path.GetFileName(videoPath)}");
+
+        await RunFfmpegAsync(ffmpegPath, new[]
+        {
+            "-y",
+            "-hide_banner",
+            "-loglevel", "error",
+            "-i", videoPath,
+            "-i", translatedAudioPath,
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "copy",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-shortest",
+            "-movflags", "+faststart",
+            outputPath,
+        }, outputPath, cancellationToken);
+    }
+
     private static async Task RunFfmpegAsync(string ffmpegPath, IReadOnlyList<string> arguments, string outputPath, CancellationToken cancellationToken)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(outputPath)!);

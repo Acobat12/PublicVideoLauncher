@@ -13,10 +13,11 @@ public sealed class PlayerFilesService
 {
     private static readonly UTF8Encoding Utf8NoBom = new(false);
 
-    public async Task WriteAllAsync(string rootFolder, IReadOnlyList<VideoEntry> entries, CancellationToken cancellationToken)
+    public async Task WriteAllAsync(string rootFolder, IReadOnlyList<VideoEntry> entries, string? translationCallbackUrl, CancellationToken cancellationToken)
     {
         await WritePlaylistAsync(rootFolder, entries, cancellationToken);
-        await File.WriteAllTextAsync(Path.Combine(rootFolder, "player.html"), PlayerHtml, Utf8NoBom, cancellationToken);
+        var playerHtml = PlayerHtml.Replace("__PVL_CALLBACK_URL__", JsonSerializer.Serialize(translationCallbackUrl ?? string.Empty));
+        await File.WriteAllTextAsync(Path.Combine(rootFolder, "player.html"), playerHtml, Utf8NoBom, cancellationToken);
         await File.WriteAllTextAsync(Path.Combine(rootFolder, "favicon.svg"), FaviconSvg, Utf8NoBom, cancellationToken);
     }
 
@@ -525,6 +526,270 @@ public sealed class PlayerFilesService
   </div>
 
   <script>
+    (function installTranslationAutoDownloadHook() {
+      const seenTranslationDownloads = new Set();
+      const translationCallbackUrl = __PVL_CALLBACK_URL__ || "/translation-ready";
+      const originalConsoleLog = console.log.bind(console);
+      const originalConsoleDebug = console.debug ? console.debug.bind(console) : null;
+      const originalConsoleInfo = console.info ? console.info.bind(console) : null;
+      const originalFetch = window.fetch ? window.fetch.bind(window) : null;
+      const OriginalXMLHttpRequest = window.XMLHttpRequest;
+      const originalOpen = OriginalXMLHttpRequest && OriginalXMLHttpRequest.prototype.open;
+      const originalSend = OriginalXMLHttpRequest && OriginalXMLHttpRequest.prototype.send;
+      const mediaProto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
+      const mediaSrcDescriptor = mediaProto ? Object.getOwnPropertyDescriptor(mediaProto, "src") : null;
+      const originalSetAttribute = Element.prototype.setAttribute;
+
+      function extractFirstUrl(value) {
+        if (!value) return null;
+        const match = String(value).match(/https?:\/\/[^\s"'<>]+/i);
+        return match ? match[0] : null;
+      }
+
+      function isTranslationAudioUrl(url) {
+        if (!url) return false;
+        const normalized = String(url).toLowerCase();
+        if (!/^https?:\/\//.test(normalized)) return false;
+        return normalized.includes("vtrans.s3-private.mds.yandex.net")
+          || normalized.includes("/tts/")
+          || normalized.includes("translation") && /\.(mp3|m4a|aac|wav|ogg)(?:$|[?#])/i.test(normalized)
+          || /\.(mp3|m4a|aac|wav|ogg)(?:$|[?#])/i.test(normalized) && normalized.includes("x-amz-signature");
+      }
+
+      function extractTranslationUrl(args) {
+        for (const arg of args) {
+          if (typeof arg === "string" && arg.includes("afterUpdateTranslation downloadTranslationUrl")) {
+            const match = extractFirstUrl(arg);
+            if (match) return match;
+          }
+        }
+
+        const joined = args.map(x => typeof x === "string" ? x : "").join(" ");
+        if (joined.includes("afterUpdateTranslation downloadTranslationUrl")) {
+          const match = extractFirstUrl(joined);
+          if (match) return match;
+        }
+
+        for (const arg of args) {
+          if (typeof arg === "string" && isTranslationAudioUrl(arg.trim())) {
+            return arg.trim();
+          }
+          if (arg && typeof arg === "object") {
+            const candidates = [arg.url, arg.src, arg.href, arg.downloadTranslationUrl];
+            for (const candidate of candidates) {
+              if (typeof candidate === "string" && isTranslationAudioUrl(candidate)) {
+                return candidate;
+              }
+            }
+          }
+        }
+
+        const genericMatch = extractFirstUrl(joined);
+        return isTranslationAudioUrl(genericMatch) ? genericMatch : null;
+      }
+
+      function sanitizeFileName(value) {
+        return String(value || "translation")
+          .replace(/[\/:*?"<>|]+/g, "-")
+          .replace(/\s+/g, " ")
+          .trim();
+      }
+
+      function getCurrentVideoName() {
+        const currentVideo = document.getElementById("video");
+        const currentSrc = (currentVideo && (currentVideo.currentSrc || currentVideo.getAttribute("src"))) || "";
+        const params = new URLSearchParams(window.location.search);
+        const src = currentSrc || params.get("src") || "video.mp4";
+        const clean = String(src).split("?")[0].split("#")[0];
+        const fileName = clean.split("/").pop() || "video.mp4";
+        return fileName.replace(/\.[^.]+$/i, "");
+      }
+
+      function buildPayload(url) {
+        const currentVideo = document.getElementById("video");
+        return {
+          url,
+          videoSrc: (currentVideo && (currentVideo.currentSrc || currentVideo.getAttribute("src"))) || "",
+          videoTitle: getCurrentVideoName(),
+          suggestedFileName: sanitizeFileName(getCurrentVideoName()) + ".translated.mp3"
+        };
+      }
+
+      async function postJson(url, payload) {
+        if (originalFetch) {
+          return originalFetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload),
+            mode: "same-origin",
+            credentials: "same-origin",
+            cache: "no-store"
+          });
+        }
+
+        return new Promise((resolve, reject) => {
+          try {
+            const xhr = new XMLHttpRequest();
+            xhr.open("POST", url, true);
+            xhr.setRequestHeader("Content-Type", "application/json");
+            xhr.onreadystatechange = function() {
+              if (xhr.readyState === 4) {
+                resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status });
+              }
+            };
+            xhr.onerror = reject;
+            xhr.send(JSON.stringify(payload));
+          } catch (err) {
+            reject(err);
+          }
+        });
+      }
+
+      async function notifyApp(url, source) {
+        if (!translationCallbackUrl || !isTranslationAudioUrl(url)) {
+          return false;
+        }
+
+        try {
+          const payload = buildPayload(url);
+          const response = await postJson(translationCallbackUrl, payload);
+          if (!response.ok) {
+            throw new Error("callback status " + response.status);
+          }
+
+          originalConsoleLog("[PVL] Translation URL forwarded to app", source || "unknown", payload.videoTitle, url);
+          return true;
+        } catch (err) {
+          originalConsoleLog("[PVL] Direct app handoff failed", source || "unknown", err);
+          return false;
+        }
+      }
+
+      function triggerTranslationDownload(url) {
+        if (!url || seenTranslationDownloads.has(url)) {
+          return;
+        }
+
+        seenTranslationDownloads.add(url);
+
+        try {
+          const suggestedName = sanitizeFileName(getCurrentVideoName()) + ".translated.mp3";
+          const anchor = document.createElement("a");
+          anchor.href = url;
+          anchor.download = suggestedName;
+          anchor.rel = "noopener";
+          anchor.style.display = "none";
+          document.body.appendChild(anchor);
+          anchor.click();
+          anchor.remove();
+          originalConsoleLog("[PVL] Auto-downloading translation", suggestedName, url);
+        } catch (err) {
+          originalConsoleLog("[PVL] Auto-download failed", err);
+        }
+      }
+
+      function handleTranslationUrl(url, source) {
+        if (!url || seenTranslationDownloads.has(url) || !isTranslationAudioUrl(url)) {
+          return;
+        }
+
+        seenTranslationDownloads.add(url);
+        window.setTimeout(async () => {
+          const handedOff = await notifyApp(url, source);
+          if (!handedOff) {
+            seenTranslationDownloads.delete(url);
+            triggerTranslationDownload(url);
+          }
+        }, 50);
+      }
+
+      function inspectConsoleArgs(args) {
+        const url = extractTranslationUrl(args);
+        if (url) {
+          handleTranslationUrl(url, "console");
+        }
+      }
+
+      console.log = (...args) => {
+        inspectConsoleArgs(args);
+        return originalConsoleLog(...args);
+      };
+
+      if (originalConsoleDebug) {
+        console.debug = (...args) => {
+          inspectConsoleArgs(args);
+          return originalConsoleDebug(...args);
+        };
+      }
+
+      if (originalConsoleInfo) {
+        console.info = (...args) => {
+          inspectConsoleArgs(args);
+          return originalConsoleInfo(...args);
+        };
+      }
+
+      if (originalFetch) {
+        window.fetch = async (...args) => {
+          const candidateUrl = typeof args[0] === "string" ? args[0] : args[0] && args[0].url;
+          if (isTranslationAudioUrl(candidateUrl)) {
+            handleTranslationUrl(candidateUrl, "fetch-request");
+          }
+          const response = await originalFetch(...args);
+          try {
+            const finalUrl = response && response.url;
+            if (isTranslationAudioUrl(finalUrl)) {
+              handleTranslationUrl(finalUrl, "fetch-response");
+            }
+          } catch {}
+          return response;
+        };
+      }
+
+      if (originalOpen && originalSend && OriginalXMLHttpRequest) {
+        OriginalXMLHttpRequest.prototype.open = function(method, url) {
+          this.__pvlUrl = url;
+          if (isTranslationAudioUrl(url)) {
+            handleTranslationUrl(url, "xhr-open");
+          }
+          return originalOpen.apply(this, arguments);
+        };
+
+        OriginalXMLHttpRequest.prototype.send = function() {
+          this.addEventListener("readystatechange", function() {
+            if (this.readyState === 2 || this.readyState === 4) {
+              const responseUrl = this.responseURL || this.__pvlUrl;
+              if (isTranslationAudioUrl(responseUrl)) {
+                handleTranslationUrl(responseUrl, "xhr-response");
+              }
+            }
+          });
+          return originalSend.apply(this, arguments);
+        };
+      }
+
+      if (mediaSrcDescriptor && mediaSrcDescriptor.set) {
+        Object.defineProperty(mediaProto, "src", {
+          configurable: true,
+          enumerable: mediaSrcDescriptor.enumerable,
+          get: mediaSrcDescriptor.get,
+          set(value) {
+            if (isTranslationAudioUrl(value)) {
+              handleTranslationUrl(value, "media-src");
+            }
+            return mediaSrcDescriptor.set.call(this, value);
+          }
+        });
+      }
+
+      Element.prototype.setAttribute = function(name, value) {
+        if (String(name).toLowerCase() === "src" && isTranslationAudioUrl(value)) {
+          handleTranslationUrl(value, "setAttribute-src");
+        }
+        return originalSetAttribute.call(this, name, value);
+      };
+    })();
+
     const params = new URLSearchParams(window.location.search);
     const rawSrc = params.get("src");
     const playlistUrl = params.get("list") || "/playlist.json";

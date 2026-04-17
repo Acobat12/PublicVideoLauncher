@@ -235,7 +235,10 @@
           <TextBlock x:Name="SummaryTextBlock" Text="Ready." Foreground="#93C5FD"/>
         </StackPanel>
 
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right">
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
+          <CheckBox x:Name="MergeTranslationCheckBox"
+                    VerticalAlignment="Center"
+                    Content="Автоподхват перевода, наложение и сохранение"/>
           <Button x:Name="StartButton" Classes="primary" Content="Start"/>
           <Button x:Name="StopButton" Classes="danger" Content="Stop" IsEnabled="False"/>
           <Button x:Name="CopyUrlButton" Content="Copy URL" IsEnabled="False"/>

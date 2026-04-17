@@ -32,7 +32,7 @@ public sealed class PlayerFilesServiceTests
             };
 
             var service = new PlayerFilesService();
-            await service.WriteAllAsync(root, entries, CancellationToken.None);
+            await service.WriteAllAsync(root, entries, null, CancellationToken.None);
 
             Assert.True(File.Exists(Path.Combine(root, "playlist.json")));
             Assert.True(File.Exists(Path.Combine(root, "player.html")));
