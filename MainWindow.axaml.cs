@@ -114,8 +114,7 @@ public partial class MainWindow : Window
         _openUrlButton.Click += OpenUrlButton_OnClick;
         _fixDnsButton.Click += FixDnsButton_OnClick;
         _dependenciesButton.Click += DependenciesButton_OnClick;
-        _mergeTranslationCheckBox.Checked += MergeTranslationCheckBox_OnChanged;
-        _mergeTranslationCheckBox.Unchecked += MergeTranslationCheckBox_OnChanged;
+        _mergeTranslationCheckBox.IsCheckedChanged += MergeTranslationCheckBox_OnChanged;
         Closing += MainWindow_Closing;
     }
 
