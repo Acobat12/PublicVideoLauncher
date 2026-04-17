@@ -818,7 +818,8 @@ public partial class MainWindow : Window
             await Dispatcher.UIThread.InvokeAsync(() => SetBusy(true, "Автосборка перевода..."));
             SetSummary("Перевод найден. Собираю итоговый файл...");
 
-            var tools = await ToolResolver.EnsureAllAsync(folder, AppendLog, cancellationToken);
+            var selectedTunnel = await Dispatcher.UIThread.InvokeAsync(GetSelectedTunnelProvider);
+            var tools = await ToolResolver.EnsureRequiredAsync(folder, selectedTunnel.Key, AppendLog, cancellationToken);
 
             var storedAudioPath = BuildStoredTranslatedAudioPath(folder, targetEntry.FileName, payload.SuggestedFileName ?? payload.Url);
             Directory.CreateDirectory(Path.GetDirectoryName(storedAudioPath)!);
