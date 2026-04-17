@@ -101,6 +101,45 @@ public partial class ToolSetupWindow : Window
                 InstallButton = this.FindControl<Button>("CloudflaredInstallButton")!,
                 OpenButton = this.FindControl<Button>("CloudflaredOpenButton")!,
             },
+            ["ngrok"] = new ToolUi
+            {
+                Name = "ngrok",
+                DownloadUrl = "https://ngrok.com/download",
+                StatusTextBlock = this.FindControl<TextBlock>("NgrokStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("NgrokPathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("NgrokHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("NgrokAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("NgrokProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("NgrokProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("NgrokInstallButton")!,
+                OpenButton = this.FindControl<Button>("NgrokOpenButton")!,
+            },
+            ["ssh"] = new ToolUi
+            {
+                Name = "ssh",
+                DownloadUrl = "https://learn.microsoft.com/windows-server/administration/openssh/openssh_install_firstuse",
+                StatusTextBlock = this.FindControl<TextBlock>("SshStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("SshPathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("SshHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("SshAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("SshProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("SshProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("SshInstallButton")!,
+                OpenButton = this.FindControl<Button>("SshOpenButton")!,
+            },
+            ["tailscale"] = new ToolUi
+            {
+                Name = "tailscale",
+                DownloadUrl = "https://tailscale.com/download",
+                StatusTextBlock = this.FindControl<TextBlock>("TailscaleStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("TailscalePathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("TailscaleHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("TailscaleAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("TailscaleProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("TailscaleProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("TailscaleInstallButton")!,
+                OpenButton = this.FindControl<Button>("TailscaleOpenButton")!,
+            },
         };
 
         foreach (var pair in _toolUi)
@@ -250,7 +289,7 @@ public partial class ToolSetupWindow : Window
             else
             {
                 var names = string.Join(", ", missing.Select(x => x.DisplayName));
-                _summaryTextBlock.Text = $"Program is stopped until the missing tools are available: {names}.";
+                _summaryTextBlock.Text = $"Missing tools detected: {names}. Install the tools required for the tunnel provider you plan to use.";
             }
         }
 

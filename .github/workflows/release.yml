@@ -130,7 +130,7 @@ jobs:
           path: |
             artifacts/releases
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 1
 
       - name: Upload source archives
         if: runner.os == 'Linux'
@@ -140,7 +140,7 @@ jobs:
           path: |
             artifacts/source
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 1
 
   github-release:
     needs: [resolve-version, build]

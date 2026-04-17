@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -19,20 +21,25 @@ public sealed class LaunchSession
 public sealed class ServerRunner
 {
     private Process? _caddyProcess;
-    private Process? _cloudflaredProcess;
+    private Process? _tunnelProcess;
     private string? _caddyStdoutFile;
     private string? _caddyStderrFile;
-    private string? _cloudflaredStdoutFile;
-    private string? _cloudflaredStderrFile;
+    private string? _tunnelStdoutFile;
+    private string? _tunnelStderrFile;
     private string? _caddyConfigFile;
+    private string? _activeTunnelProvider;
+    private string? _tailscaleLocalUrl;
+    private string? _tailscalePath;
 
     public bool IsRunning =>
         (_caddyProcess is { HasExited: false }) ||
-        (_cloudflaredProcess is { HasExited: false });
+        (_tunnelProcess is { HasExited: false }) ||
+        (_activeTunnelProvider is not null && string.Equals(_activeTunnelProvider, "tailscale funnel", StringComparison.OrdinalIgnoreCase));
 
     public async Task<LaunchSession> StartAsync(
         VideoWorkspace workspace,
         int requestedPort,
+        string tunnelProvider,
         ToolPaths tools,
         Action<string> log,
         CancellationToken cancellationToken,
@@ -43,6 +50,10 @@ public sealed class ServerRunner
 
         if (workspace.RootFolder is null)
             throw new InvalidOperationException("Workspace root is not set.");
+
+        var provider = NormalizeTunnelProvider(tunnelProvider);
+        _activeTunnelProvider = provider;
+        _tailscalePath = tools.TailscalePath;
 
         var port = PortHelper.GetFreeTcpPort(requestedPort);
         var localBaseUrl = $"http://127.0.0.1:{port}";
@@ -78,61 +89,29 @@ public sealed class ServerRunner
             log,
             cancellationToken);
 
-        _cloudflaredStdoutFile = Path.GetTempFileName();
-        _cloudflaredStderrFile = Path.GetTempFileName();
+        _tunnelStdoutFile = Path.GetTempFileName();
+        _tunnelStderrFile = Path.GetTempFileName();
 
-        log("Launching cloudflared...");
-        _cloudflaredProcess = StartProcess(
-            tools.CloudflaredPath,
-            new[]
-            {
-                "tunnel",
-                "--url", localBaseUrl,
-                "--no-autoupdate"
-            },
+        var publicBaseUrl = await StartTunnelAsync(
+            provider,
+            localUrl,
             workspace.RootFolder,
-            _cloudflaredStdoutFile,
-            _cloudflaredStderrFile);
-
-        var publicBaseUrl = await WaitForTryCloudflareUrlAsync(
-            _cloudflaredProcess,
-            _cloudflaredStdoutFile,
-            _cloudflaredStderrFile,
-            cancellationToken);
-
-        log($"Tunnel URL detected: {publicBaseUrl}");
-
-        await WaitForCloudflaredConnectionAsync(
-            _cloudflaredProcess,
-            _cloudflaredStdoutFile,
-            _cloudflaredStderrFile,
-            log,
-            cancellationToken);
-
-        await TryWaitForPublicHttpAsync(
-            _cloudflaredProcess,
-            publicBaseUrl,
-            "/playlist.json",
-            _cloudflaredStdoutFile,
-            _cloudflaredStderrFile,
+            tools,
             log,
             cancellationToken);
 
         var targetUrl = publicBaseUrl.TrimEnd('/') + "/player.html?list=/playlist.json";
         if (!string.IsNullOrWhiteSpace(initialVideoSrc))
-        {
             targetUrl += "&src=" + Uri.EscapeDataString(initialVideoSrc);
-        }
 
         if (port != requestedPort)
-        {
             log($"Requested port {requestedPort} is unavailable. Using port {port} instead.");
-        }
 
         log("Public URL: " + targetUrl);
 
         _ = PumpLogsAsync(_caddyProcess, _caddyStdoutFile, _caddyStderrFile, log, "caddy", cancellationToken);
-        _ = PumpLogsAsync(_cloudflaredProcess, _cloudflaredStdoutFile, _cloudflaredStderrFile, log, "cloudflared", cancellationToken);
+        if (_tunnelProcess is not null)
+            _ = PumpLogsAsync(_tunnelProcess, _tunnelStdoutFile, _tunnelStderrFile, log, provider, cancellationToken);
 
         return new LaunchSession
         {
@@ -144,19 +123,35 @@ public sealed class ServerRunner
 
     public async Task StopAsync(Action<string> log)
     {
-        await StopProcessAsync(_cloudflaredProcess, log, "cloudflared");
+        if (string.Equals(_activeTunnelProvider, "tailscale funnel", StringComparison.OrdinalIgnoreCase) &&
+            !string.IsNullOrWhiteSpace(_tailscaleLocalUrl) &&
+            !string.IsNullOrWhiteSpace(_tailscalePath))
+        {
+            try
+            {
+                await StopTailscaleFunnelAsync(log);
+            }
+            catch (Exception ex)
+            {
+                log("[tailscale funnel] stop warning: " + ex.Message);
+            }
+        }
+
+        await StopProcessAsync(_tunnelProcess, log, _activeTunnelProvider ?? "tunnel");
         await StopProcessAsync(_caddyProcess, log, "caddy");
 
-        _cloudflaredProcess = null;
+        _tunnelProcess = null;
         _caddyProcess = null;
+        _activeTunnelProvider = null;
+        _tailscaleLocalUrl = null;
+        _tailscalePath = null;
 
         CleanupTempFile(ref _caddyStdoutFile);
         CleanupTempFile(ref _caddyStderrFile);
-        CleanupTempFile(ref _cloudflaredStdoutFile);
-        CleanupTempFile(ref _cloudflaredStderrFile);
+        CleanupTempFile(ref _tunnelStdoutFile);
+        CleanupTempFile(ref _tunnelStderrFile);
         CleanupTempFile(ref _caddyConfigFile);
     }
-
 
     private static string BuildCaddyConfig(string rootFolder, int port, int? translationCallbackPort)
     {
@@ -179,7 +174,230 @@ public sealed class ServerRunner
 
         return string.Join(Environment.NewLine, lines);
     }
-    private static Process StartProcess(string fileName, string[] args, string workingDirectory, string stdoutPath, string stderrPath)
+
+    private async Task<string> StartTunnelAsync(
+        string provider,
+        string localUrl,
+        string workingDirectory,
+        ToolPaths tools,
+        Action<string> log,
+        CancellationToken cancellationToken)
+    {
+        switch (provider)
+        {
+            case "cloudflared":
+            {
+                _tunnelProcess = StartProcess(
+                    tools.CloudflaredPath ?? throw new InvalidOperationException("cloudflared path is not available."),
+                    new[] { "tunnel", "--url", localUrl, "--no-autoupdate", "--protocol", "http2" },
+                    workingDirectory,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!);
+
+                log("Launching cloudflared...");
+
+                var publicUrl = await WaitForRegexUrlAsync(
+                    _tunnelProcess,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    new Regex(@"https://[a-z0-9-]+\.trycloudflare\.com", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                    "Cloudflared",
+                    cancellationToken);
+
+                log($"Tunnel URL detected: {publicUrl}");
+
+                await WaitForCloudflaredConnectionAsync(
+                    _tunnelProcess,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    log,
+                    cancellationToken);
+
+                await TryWaitForPublicHttpAsync(
+                    _tunnelProcess,
+                    publicUrl,
+                    "/playlist.json",
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    log,
+                    cancellationToken);
+
+                return publicUrl;
+            }
+
+            case "ngrok":
+                _tunnelProcess = StartProcess(
+                    tools.NgrokPath ?? throw new InvalidOperationException("ngrok path is not available."),
+                    new[] { "http", localUrl, "--log", "stdout", "--log-format", "json" },
+                    workingDirectory,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!);
+                log("Launching ngrok...");
+                return await WaitForNgrokUrlAsync(_tunnelProcess, _tunnelStdoutFile!, _tunnelStderrFile!, cancellationToken);
+
+            case "localhost.run":
+                _tunnelProcess = StartProcess(
+                    tools.SshPath ?? throw new InvalidOperationException("ssh path is not available."),
+                    new[] { "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30", "-R", $"80:localhost:{new Uri(localUrl).Port}", "localhost.run" },
+                    workingDirectory,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!);
+                log("Launching localhost.run tunnel via ssh...");
+                return await WaitForRegexUrlAsync(
+                    _tunnelProcess,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    new Regex(@"https://[A-Za-z0-9.-]+", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                    "localhost.run",
+                    cancellationToken);
+
+            case "pinggy":
+                _tunnelProcess = StartProcess(
+                    tools.SshPath ?? throw new InvalidOperationException("ssh path is not available."),
+                    new[] { "-p", "443", "-o", "StrictHostKeyChecking=no", "-o", "ServerAliveInterval=30", "-R", $"0:localhost:{new Uri(localUrl).Port}", "free.pinggy.io" },
+                    workingDirectory,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!);
+                log("Launching Pinggy tunnel via ssh...");
+                return await WaitForRegexUrlAsync(
+                    _tunnelProcess,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    new Regex(@"https://[A-Za-z0-9.-]+\.pinggy\.link", RegexOptions.IgnoreCase | RegexOptions.Compiled),
+                    "Pinggy",
+                    cancellationToken);
+
+            case "tailscale funnel":
+                _tailscaleLocalUrl = localUrl;
+                return await StartTailscaleFunnelAsync(localUrl, tools, log, cancellationToken);
+
+            default:
+                throw new InvalidOperationException("Unsupported tunnel provider: " + provider);
+        }
+    }
+
+    private async Task<string> StartTailscaleFunnelAsync(string localUrl, ToolPaths tools, Action<string> log, CancellationToken cancellationToken)
+    {
+        var tailscalePath = tools.TailscalePath ?? throw new InvalidOperationException("tailscale path is not available.");
+        var port = new Uri(localUrl).Port;
+
+        var start = await RunCommandCaptureAsync(
+            tailscalePath,
+            new[] { "funnel", "--bg", "--yes", $"localhost:{port}" },
+            cancellationToken);
+
+        log("Launching Tailscale Funnel...");
+        if (!string.IsNullOrWhiteSpace(start.StdErr))
+            AppendLineSafe(_tunnelStderrFile!, start.StdErr);
+        if (!string.IsNullOrWhiteSpace(start.StdOut))
+            AppendLineSafe(_tunnelStdoutFile!, start.StdOut);
+
+        var status = await RunCommandCaptureAsync(
+            tailscalePath,
+            new[] { "funnel", "status", "--json" },
+            cancellationToken);
+
+        AppendLineSafe(_tunnelStdoutFile!, status.StdOut);
+        var url = TryExtractTailscaleUrl(status.StdOut);
+        if (string.IsNullOrWhiteSpace(url))
+        {
+            throw new InvalidOperationException(
+                "Tailscale Funnel started, but the public URL could not be detected. Make sure Tailscale is signed in and Funnel is allowed for this tailnet.\n\nSTDOUT:\n" + status.StdOut +
+                "\n\nSTDERR:\n" + status.StdErr);
+        }
+
+        return url;
+    }
+
+    private async Task StopTailscaleFunnelAsync(Action<string> log)
+    {
+        var result = await RunCommandCaptureAsync(
+            _tailscalePath!,
+            new[] { "funnel", _tailscaleLocalUrl!, "off" },
+            CancellationToken.None);
+
+        if (!string.IsNullOrWhiteSpace(result.StdErr))
+            log("[tailscale funnel] " + result.StdErr.Trim());
+    }
+
+    private static string TryExtractTailscaleUrl(string json)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            var urls = new List<string>();
+            CollectHttpsUrls(doc.RootElement, urls);
+            return urls
+                .Where(x => x.Contains(".ts.net", StringComparison.OrdinalIgnoreCase))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .FirstOrDefault() ?? string.Empty;
+        }
+        catch
+        {
+            return string.Empty;
+        }
+    }
+
+    private static void CollectHttpsUrls(JsonElement element, List<string> urls)
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    if (property.Value.ValueKind == JsonValueKind.String)
+                    {
+                        var value = property.Value.GetString();
+                        if (!string.IsNullOrWhiteSpace(value) && value.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                            urls.Add(value);
+                    }
+
+                    CollectHttpsUrls(property.Value, urls);
+                }
+                break;
+
+            case JsonValueKind.Array:
+                foreach (var item in element.EnumerateArray())
+                    CollectHttpsUrls(item, urls);
+                break;
+        }
+    }
+
+    private static async Task<(string StdOut, string StdErr)> RunCommandCaptureAsync(string fileName, IEnumerable<string> args, CancellationToken cancellationToken)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = fileName,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+
+        foreach (var arg in args)
+            psi.ArgumentList.Add(arg);
+
+        using var process = new Process { StartInfo = psi };
+        process.Start();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync(cancellationToken);
+        return (await stdoutTask, await stderrTask);
+    }
+
+    private static string NormalizeTunnelProvider(string provider) =>
+        (provider ?? string.Empty).Trim().ToLowerInvariant() switch
+        {
+            "cloudflare tunnel" => "cloudflared",
+            "cloudflared" => "cloudflared",
+            "ngrok" => "ngrok",
+            "localhost.run" => "localhost.run",
+            "pinggy" => "pinggy",
+            "tailscale funnel" => "tailscale funnel",
+            _ => throw new InvalidOperationException("Unsupported tunnel provider: " + provider),
+        };
+
+    private static Process StartProcess(string fileName, IEnumerable<string> args, string workingDirectory, string stdoutPath, string stderrPath)
     {
         var psi = new ProcessStartInfo
         {
@@ -270,37 +488,90 @@ public sealed class ServerRunner
             lastError);
     }
 
-    private static async Task<string> WaitForTryCloudflareUrlAsync(
-        Process process,
-        string? stdoutPath,
-        string? stderrPath,
-        CancellationToken cancellationToken)
+    private static async Task<string> WaitForNgrokUrlAsync(Process process, string stdoutPath, string stderrPath, CancellationToken cancellationToken)
     {
-        var regex = new Regex(
-            @"https://[a-z0-9-]+\.trycloudflare\.com",
-            RegexOptions.IgnoreCase | RegexOptions.Compiled);
-
-        for (var attempt = 1; attempt <= 120; attempt++)
+        for (var i = 0; i < 120; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
             if (process.HasExited)
             {
                 throw new InvalidOperationException(
-                    "Cloudflared exited before publishing a public URL.\n\nSTDOUT:\n" + ReadFileSafe(stdoutPath) +
+                    "ngrok exited before publishing a public URL.\n\nSTDOUT:\n" + ReadFileSafe(stdoutPath) +
                     "\n\nSTDERR:\n" + ReadFileSafe(stderrPath));
             }
+
+            var text = ReadFileSafe(stdoutPath) + Environment.NewLine + ReadFileSafe(stderrPath);
+            var url = TryExtractNgrokUrl(text);
+            if (!string.IsNullOrWhiteSpace(url))
+                return url;
+
+            await Task.Delay(1000, cancellationToken);
+        }
+
+        throw new InvalidOperationException(
+            "ngrok started, but the public URL was not detected. Check whether ngrok is installed and authenticated.\n\nSTDOUT:\n" + ReadFileSafe(stdoutPath) +
+            "\n\nSTDERR:\n" + ReadFileSafe(stderrPath));
+    }
+
+    private static string? TryExtractNgrokUrl(string text)
+    {
+        foreach (var line in text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(line);
+
+                if (doc.RootElement.TryGetProperty("url", out var urlProperty) && urlProperty.ValueKind == JsonValueKind.String)
+                {
+                    var url = urlProperty.GetString();
+                    if (!string.IsNullOrWhiteSpace(url) && url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                        return url;
+                }
+
+                if (doc.RootElement.TryGetProperty("msg", out var msgProperty) && msgProperty.ValueKind == JsonValueKind.String)
+                {
+                    var match = Regex.Match(msgProperty.GetString() ?? string.Empty, @"https://[A-Za-z0-9.-]+", RegexOptions.IgnoreCase);
+                    if (match.Success)
+                        return match.Value;
+                }
+            }
+            catch
+            {
+                var match = Regex.Match(line, @"https://[A-Za-z0-9.-]+", RegexOptions.IgnoreCase);
+                if (match.Success && match.Value.Contains("ngrok", StringComparison.OrdinalIgnoreCase))
+                    return match.Value;
+            }
+        }
+
+        return null;
+    }
+
+    private static async Task<string> WaitForRegexUrlAsync(
+        Process process,
+        string stdoutPath,
+        string stderrPath,
+        Regex regex,
+        string providerName,
+        CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < 120; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
 
             var text = ReadFileSafe(stdoutPath) + Environment.NewLine + ReadFileSafe(stderrPath);
             var match = regex.Match(text);
             if (match.Success)
                 return match.Value;
 
-            await Task.Delay(500, cancellationToken);
+            if (process.HasExited)
+                break;
+
+            await Task.Delay(1000, cancellationToken);
         }
 
         throw new InvalidOperationException(
-            "Cloudflared started, but public URL was not detected in logs.\n\nSTDOUT:\n" + ReadFileSafe(stdoutPath) +
+            providerName + " started, but the public URL was not detected in logs.\n\nSTDOUT:\n" + ReadFileSafe(stdoutPath) +
             "\n\nSTDERR:\n" + ReadFileSafe(stderrPath));
     }
 
@@ -464,30 +735,6 @@ public sealed class ServerRunner
         }
     }
 
-    private static async Task StopProcessAsync(Process? process, Action<string> log, string name)
-    {
-        if (process is null)
-            return;
-
-        try
-        {
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-                await process.WaitForExitAsync();
-                log($"Stopped {name}.");
-            }
-        }
-        catch (Exception ex)
-        {
-            log($"Failed to stop {name}: {ex.Message}");
-        }
-        finally
-        {
-            process.Dispose();
-        }
-    }
-
     private static string ReadFileSafe(string? path)
     {
         try
@@ -502,14 +749,38 @@ public sealed class ServerRunner
         }
     }
 
-    private static void AppendLineSafe(string path, string text)
+    private static void AppendLineSafe(string path, string line)
     {
         try
         {
-            File.AppendAllText(path, text + Environment.NewLine);
+            File.AppendAllText(path, line + Environment.NewLine);
         }
         catch
         {
+        }
+    }
+
+    private static async Task StopProcessAsync(Process? process, Action<string> log, string name)
+    {
+        if (process is null)
+            return;
+
+        try
+        {
+            if (!process.HasExited)
+            {
+                log($"Stopping {name}...");
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            log($"Stop warning for {name}: {ex.Message}");
+        }
+        finally
+        {
+            process.Dispose();
         }
     }
 

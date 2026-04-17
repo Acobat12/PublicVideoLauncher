@@ -91,7 +91,7 @@ jobs:
             artifacts/releases
             artifacts/SHA256SUMS.txt
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 1
 
       - name: Upload source artifacts
         if: runner.os == 'Linux'
@@ -101,4 +101,4 @@ jobs:
           path: |
             artifacts/source
           if-no-files-found: ignore
-          retention-days: 14
+          retention-days: 1
