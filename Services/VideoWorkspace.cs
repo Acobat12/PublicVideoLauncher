@@ -62,6 +62,7 @@ public sealed class VideoWorkspace
             var proxyCacheFileName = $"{slug}.proxy.mp4";
             var proxyCachePath = Path.Combine(CacheFolder!, proxyCacheFileName);
             var proxyUrl = "/.public-video-cache/" + EncodeUrlPath(proxyCacheFileName);
+            var votHelperUrl = "/.public-video-vot/" + EncodeUrlPath(slug) + ".mp4";
 
             var isDirectMp4 = string.Equals(ext, ".mp4", StringComparison.OrdinalIgnoreCase);
 
@@ -75,6 +76,7 @@ public sealed class VideoWorkspace
                 OriginalUrl = originalUrl,
                 PlaybackUrl = isDirectMp4 || !proxyTranslationEnabled ? originalUrl : playbackUrl,
                 TranslationUrl = isDirectMp4 || !proxyTranslationEnabled ? originalUrl : proxyUrl,
+                VotHelperUrl = votHelperUrl,
                 PlaybackCachePath = isDirectMp4 || !proxyTranslationEnabled ? null : playbackCachePath,
                 TranslationCachePath = isDirectMp4 || !proxyTranslationEnabled ? null : proxyCachePath,
                 ProxyModeEnabled = proxyTranslationEnabled,

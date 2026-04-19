@@ -1,0 +1,7 @@
+v4 changes
+- Fixed live stdout/stderr capture for tunnel CLIs by flushing incrementally while the process is running.
+- Fixed xTunnel handling of LICENSE_BUSY by retrying with --force and clearing stale temp logs first.
+- Added xTunnel Connected-state wait before URL detection.
+- Improved empty-log error messages.
+- VK Tunnel is no longer shown as installed in Dependencies just because npx exists in PATH.
+- Clarified in hints that Tuna CLI presence does not mean Tuna token is configured.

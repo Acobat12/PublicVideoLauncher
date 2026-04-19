@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using PublicVideoLauncher.Models;
 using PublicVideoLauncher.Services;
 using System;
+using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -33,6 +34,7 @@ public partial class MainWindow : Window
     private readonly Button _openUrlButton;
     private readonly Button _fixDnsButton;
     private readonly Button _dependenciesButton;
+    private readonly Button _tunnelSetupButton;
     private readonly NumericUpDown _portNumeric;
     private readonly ComboBox _tunnelProviderComboBox;
     private readonly CheckBox _proxyModeCheckBox;
@@ -43,6 +45,8 @@ public partial class MainWindow : Window
     private readonly ListBox _videosListBox;
     private readonly TextBox _logTextBox;
     private readonly TextBox _publicUrlTextBox;
+    private readonly TextBox _tunnelAuthTextBox;
+    private readonly TextBox _tunnelCliPathTextBox;
     private readonly TextBlock _statusTextBlock;
     private readonly TextBlock _summaryTextBlock;
 
@@ -55,6 +59,11 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim _autoMergeSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<string, DateTime> _autoMergeEventTimes = new(StringComparer.OrdinalIgnoreCase);
     private readonly HttpClient _translationHttpClient = new(new HttpClientHandler { AllowAutoRedirect = true });
+    private readonly object _logFileLock = new();
+    private readonly string _persistentLogPath = Path.Combine(AppContext.BaseDirectory, "log.txt");
+    private readonly Queue<string> _uiLogLines = new();
+    private volatile bool _persistentLogEnabled;
+    private const int MaxUiLogLines = 1500;
 
     private CancellationTokenSource? _runCts;
     private CancellationTokenSource? _downloadsWatcherCts;
@@ -66,13 +75,18 @@ public partial class MainWindow : Window
     private string? _publicUrl;
     private string? _lastAutoMergedAudioPath;
     private DateTime _lastAutoMergedAtUtc;
+    private TunnelLaunchSettings _loadedTunnelSettings = new();
     private readonly TunnelProviderOption[] _tunnelProviders =
     [
         new() { Key = "cloudflared", DisplayName = "Cloudflare Tunnel" },
-    new() { Key = "ngrok", DisplayName = "ngrok" },
-    new() { Key = "localhost.run", DisplayName = "localhost.run" },
-    new() { Key = "pinggy", DisplayName = "Pinggy" },
-    new() { Key = "tailscale funnel", DisplayName = "Tailscale Funnel" },
+        new() { Key = "cloudflare-name", DisplayName = "Cloudflare Name", SupportsSetup = true },
+        //new() { Key = "ngrok", DisplayName = "ngrok" },
+        new() { Key = "localhost.run", DisplayName = "localhost.run" },
+        new() { Key = "tailscale-funnel", DisplayName = "Tailscale Funnel" },
+        new() { Key = "zrok", DisplayName = "zrok" },
+        //new() { Key = "localtunnel", DisplayName = "LocalTunnel" },
+        new() { Key = "xtunnel", DisplayName = "xTunnel" },
+        //new() { Key = "vk-tunnel", DisplayName = "VK Tunnel" },
     ];
 
 
@@ -89,6 +103,7 @@ public partial class MainWindow : Window
         _openUrlButton = this.FindControl<Button>("OpenUrlButton")!;
         _fixDnsButton = this.FindControl<Button>("FixDnsButton")!;
         _dependenciesButton = this.FindControl<Button>("DependenciesButton")!;
+        _tunnelSetupButton = this.FindControl<Button>("TunnelSetupButton")!;
         _portNumeric = this.FindControl<NumericUpDown>("PortNumeric")!;
         _tunnelProviderComboBox = this.FindControl<ComboBox>("TunnelProviderComboBox")!;
         _proxyModeCheckBox = this.FindControl<CheckBox>("ProxyModeCheckBox")!;
@@ -99,12 +114,15 @@ public partial class MainWindow : Window
         _videosListBox = this.FindControl<ListBox>("VideosListBox")!;
         _logTextBox = this.FindControl<TextBox>("LogTextBox")!;
         _publicUrlTextBox = this.FindControl<TextBox>("PublicUrlTextBox")!;
+        _tunnelAuthTextBox = this.FindControl<TextBox>("TunnelAuthTextBox")!;
+        _tunnelCliPathTextBox = this.FindControl<TextBox>("TunnelCliPathTextBox")!;
         _statusTextBlock = this.FindControl<TextBlock>("StatusTextBlock")!;
         _summaryTextBlock = this.FindControl<TextBlock>("SummaryTextBlock")!;
 
         _videosListBox.ItemsSource = _videoItems;
         _tunnelProviderComboBox.ItemsSource = _tunnelProviders;
         _tunnelProviderComboBox.SelectedItem = _tunnelProviders[0];
+        ApplyTunnelFieldHints();
 
         _browseButton.Click += BrowseButton_OnClick;
         _scanButton.Click += ScanButton_OnClick;
@@ -114,8 +132,129 @@ public partial class MainWindow : Window
         _openUrlButton.Click += OpenUrlButton_OnClick;
         _fixDnsButton.Click += FixDnsButton_OnClick;
         _dependenciesButton.Click += DependenciesButton_OnClick;
+        _tunnelSetupButton.Click += TunnelSetupButton_OnClick;
+        _tunnelProviderComboBox.SelectionChanged += TunnelProviderComboBox_OnSelectionChanged;
         _mergeTranslationCheckBox.IsCheckedChanged += MergeTranslationCheckBox_OnChanged;
         Closing += MainWindow_Closing;
+    }
+
+    private TunnelLaunchSettings CollectTunnelSettings() => new()
+    {
+        TunnelAuth = (_tunnelAuthTextBox.Text ?? string.Empty).Trim(),
+        CustomCliPath = (_tunnelCliPathTextBox.Text ?? string.Empty).Trim(),
+        CloudflareNamedTunnelName = _loadedTunnelSettings.CloudflareNamedTunnelName,
+        CloudflareNamedHostname = _loadedTunnelSettings.CloudflareNamedHostname,
+    };
+
+    private void LoadTunnelSettingsForFolder(string? folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            _loadedTunnelSettings = new TunnelLaunchSettings();
+            return;
+        }
+
+        var settings = TunnelSettingsStore.Load(folder);
+        _loadedTunnelSettings = settings;
+        _tunnelAuthTextBox.Text = settings.TunnelAuth ?? string.Empty;
+        _tunnelCliPathTextBox.Text = settings.CustomCliPath ?? string.Empty;
+        ApplyTunnelFieldHints();
+    }
+
+    private void SaveTunnelSettingsForFolder(string? folder)
+    {
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+            return;
+
+        TunnelSettingsStore.Save(folder, CollectTunnelSettings());
+    }
+
+    private void ApplyTunnelFieldHints()
+    {
+        var provider = GetSelectedTunnelProvider().Key;
+        switch (provider)
+        {
+            case "cloudflare-name":
+                _tunnelAuthTextBox.IsEnabled = false;
+                _tunnelAuthTextBox.Watermark = "Use Setup... to configure tunnel name, hostname and Cloudflare login.";
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.Watermark = "Optional custom path to cloudflared.exe";
+                _tunnelSetupButton.IsVisible = true;
+                break;
+            case "zrok":
+                _tunnelAuthTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "Paste your zrok account token here for first-time enable. Leave empty if this machine is already enabled.";
+                _tunnelCliPathTextBox.Watermark = "Optional custom path to zrok.exe / zrok";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            case "ngrok":
+                _tunnelAuthTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "Paste your ngrok authtoken here for first-time setup. Leave empty if ngrok is already configured.";
+                _tunnelCliPathTextBox.Watermark = "Optional custom path to ngrok.exe / ngrok";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            case "localhost.run":
+                _tunnelAuthTextBox.IsEnabled = false;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "localhost.run uses a free SSH tunnel via nokey@localhost.run. Tunnel auth is not used here.";
+                _tunnelCliPathTextBox.Watermark = "Optional custom path to ssh.exe / ssh";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            case "tailscale-funnel":
+                _tunnelAuthTextBox.IsEnabled = false;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "Tailscale Funnel uses your existing Tailscale login on this machine. Tunnel auth is not used here.";
+                _tunnelCliPathTextBox.Watermark = "Optional custom path to tailscale.exe / tailscale";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            case "localtunnel":
+                _tunnelAuthTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "Usually not needed for LocalTunnel. Some visitors may still see a password prompt on the public page.";
+                _tunnelCliPathTextBox.Watermark = "Optional path to lt / localtunnel / npx";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            case "xtunnel":
+                _tunnelAuthTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "Paste your xTunnel key here. The app will activate xTunnel automatically if needed.";
+                _tunnelCliPathTextBox.Watermark = "Optional custom path to xTunnel.exe";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            case "vk-tunnel":
+                _tunnelAuthTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "Usually not needed for VK Tunnel.";
+                _tunnelCliPathTextBox.Watermark = "Optional path to vk-tunnel.cmd / vk-tunnel.js. If empty, the app will try npx.";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+            default:
+                _tunnelAuthTextBox.IsEnabled = true;
+                _tunnelCliPathTextBox.IsEnabled = true;
+                _tunnelAuthTextBox.Watermark = "zrok: account token for enable. xTunnel: license key. Optional for Cloudflare / LocalTunnel / VK.";
+                _tunnelCliPathTextBox.Watermark = "Optional path to zrok / lt / xTunnel.exe / vk-tunnel.cmd / npx";
+                _tunnelSetupButton.IsVisible = false;
+                break;
+        }
+    }
+
+    private void TunnelProviderComboBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        ApplyTunnelFieldHints();
+    }
+
+    private async void TunnelSetupButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        var folder = (_folderTextBox.Text ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
+        {
+            await ShowMessageAsync("Folder required", "Select a valid folder first.");
+            return;
+        }
+
+        await ShowCloudflareNamedSetupWindowAsync(folder);
     }
 
     private async void BrowseButton_OnClick(object? sender, RoutedEventArgs e)
@@ -139,6 +278,7 @@ public partial class MainWindow : Window
             }
 
             _folderTextBox.Text = path;
+            LoadTunnelSettingsForFolder(path);
             SetSummary("Folder selected.");
         }
         catch (Exception ex)
@@ -193,7 +333,7 @@ public partial class MainWindow : Window
             await ShowMessageAsync(
                 "Fix DNS",
                 "Start the tunnel first. Then this button will check:\n\n" +
-                "• system DNS\n• Cloudflare 1.1.1.1\n• Google 8.8.8.8\n\n" +
+                "вЂў system DNS\nвЂў Cloudflare 1.1.1.1\nвЂў Google 8.8.8.8\n\n" +
                 "and tell you whether the problem is system DNS or browser Secure DNS / DNS-over-HTTPS.");
             return;
         }
@@ -247,12 +387,12 @@ public partial class MainWindow : Window
                 try
                 {
                     StartAutoMergeWatcher();
-                    SetSummary("Автоподхват перевода включён.");
+                    SetSummary("Auto merge is enabled.");
                 }
                 catch (Exception ex)
                 {
                     AppendLog("Auto-merge watcher failed to start: " + ex);
-                    _ = ShowMessageAsync("Автоподхват перевода", ex.Message);
+                    _ = ShowMessageAsync("Auto merge", ex.Message);
                 }
             }
         }
@@ -260,7 +400,7 @@ public partial class MainWindow : Window
         {
             StopAutoMergeWatcher();
             if (_serverRunner.IsRunning)
-                SetSummary("Автоподхват перевода выключен.");
+                SetSummary("Auto merge is disabled.");
         }
     }
 
@@ -326,6 +466,23 @@ public partial class MainWindow : Window
         _runCts?.Cancel();
         _runCts?.Dispose();
         _runCts = new CancellationTokenSource();
+        BeginPersistentLogSession(folder, GetSelectedTunnelProvider().DisplayName);
+
+        var selectedTunnel = GetSelectedTunnelProvider();
+        if (selectedTunnel.Key.Equals("cloudflare-name", StringComparison.OrdinalIgnoreCase))
+        {
+            var currentSettings = CollectTunnelSettings();
+            if (string.IsNullOrWhiteSpace(currentSettings.CloudflareNamedTunnelName) ||
+                string.IsNullOrWhiteSpace(currentSettings.CloudflareNamedHostname) ||
+                !CloudflareNamedTunnelService.HasOriginCertificate())
+            {
+                SetBusy(false);
+                SetStatus("Setup required");
+                SetSummary("Cloudflare Name needs setup before start.");
+                await ShowCloudflareNamedSetupWindowAsync(folder);
+                return;
+            }
+        }
 
         SetBusy(true, "Starting services...");
         try
@@ -341,15 +498,21 @@ public partial class MainWindow : Window
             }
 
             AppendLog("Ensuring helper tools...");
-            var selectedTunnel = GetSelectedTunnelProvider();
+            var tunnelSettings = CollectTunnelSettings();
+            SaveTunnelSettingsForFolder(folder);
             AppendLog("Selected tunnel provider: " + selectedTunnel.DisplayName);
-            var tools = await ToolResolver.EnsureRequiredAsync(folder, selectedTunnel.Key, AppendLog, _runCts.Token);
+            if (!string.IsNullOrWhiteSpace(tunnelSettings.CustomCliPath)) AppendLog("Custom tunnel CLI path: " + tunnelSettings.CustomCliPath);
+            var tools = await ToolResolver.EnsureRequiredAsync(folder, selectedTunnel.Key, tunnelSettings, AppendLog, _runCts.Token);
             AppendLog("ffmpeg: " + tools.FfmpegPath);
             AppendLog("caddy: " + tools.CaddyPath);
             if (!string.IsNullOrWhiteSpace(tools.CloudflaredPath)) AppendLog("cloudflared: " + tools.CloudflaredPath);
             if (!string.IsNullOrWhiteSpace(tools.NgrokPath)) AppendLog("ngrok: " + tools.NgrokPath);
             if (!string.IsNullOrWhiteSpace(tools.SshPath)) AppendLog("ssh: " + tools.SshPath);
             if (!string.IsNullOrWhiteSpace(tools.TailscalePath)) AppendLog("tailscale: " + tools.TailscalePath);
+            if (!string.IsNullOrWhiteSpace(tools.ZrokPath)) AppendLog("zrok: " + tools.ZrokPath);
+            if (!string.IsNullOrWhiteSpace(tools.LocalTunnelPath)) AppendLog("localtunnel: " + tools.LocalTunnelPath);
+            if (!string.IsNullOrWhiteSpace(tools.XTunnelPath)) AppendLog("xtunnel: " + tools.XTunnelPath);
+            if (!string.IsNullOrWhiteSpace(tools.VkTunnelPath)) AppendLog("vk-tunnel: " + tools.VkTunnelPath);
 
             var entriesRequiringCache = _workspace.Entries
                 .Where(x => !string.IsNullOrWhiteSpace(x.PlaybackCachePath) || !string.IsNullOrWhiteSpace(x.TranslationCachePath))
@@ -384,6 +547,7 @@ public partial class MainWindow : Window
                 preferredPort,
                 selectedTunnel.Key,
                 tools,
+                tunnelSettings,
                 AppendLog,
                 _runCts.Token,
                 selectedEntry?.PlaybackUrl,
@@ -414,7 +578,7 @@ public partial class MainWindow : Window
             if (_mergeTranslationCheckBox.IsChecked == true)
             {
                 StartAutoMergeWatcher();
-                AppendLog("Translation pipeline is active. Waiting for direct translation URLs. Downloads watcher is only a fallback.");
+                AppendLog("Translation pipeline is active. The app will wait for direct translation callbacks and merge output automatically when possible.");
             }
             else
             {
@@ -431,6 +595,15 @@ public partial class MainWindow : Window
         {
             AppendLog("Start failed: " + ex);
             SetStatus("Stopped");
+
+            if (selectedTunnel.Key.Equals("cloudflare-name", StringComparison.OrdinalIgnoreCase) &&
+                (ex.Message.Contains("Cloudflare Name requires", StringComparison.OrdinalIgnoreCase) ||
+                 ex.Message.Contains("Cloudflare login is required", StringComparison.OrdinalIgnoreCase)))
+            {
+                SetSummary("Cloudflare Name setup is incomplete.");
+                await ShowCloudflareNamedSetupWindowAsync(folder);
+                return;
+            }
 
             var looksLikeToolIssue = ToolResolver.LooksLikeToolIssue(ex);
             var requiredToolNames = ToolResolver.GetRequiredToolNames(GetSelectedTunnelProvider().Key);
@@ -505,6 +678,149 @@ public partial class MainWindow : Window
     {
         var window = new ToolSetupWindow(folder, startupError, AppendLog);
         await window.ShowDialog(this);
+    }
+
+    private async Task ShowCloudflareNamedSetupWindowAsync(string folder)
+    {
+        var settings = CollectTunnelSettings();
+
+        var dialog = new Window
+        {
+            Title = "Cloudflare Name Setup",
+            Width = 720,
+            Height = 420,
+            CanResize = false,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Background = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#0B1220")),
+        };
+
+        var tunnelNameBox = new TextBox
+        {
+            Text = settings.CloudflareNamedTunnelName ?? string.Empty,
+            Watermark = "Example: trading-course-tunnel"
+        };
+
+        var hostnameBox = new TextBox
+        {
+            Text = settings.CloudflareNamedHostname ?? string.Empty,
+            Watermark = "Example: video.example.com"
+        };
+
+        var statusBlock = new TextBlock
+        {
+            Text = CloudflareNamedTunnelService.HasOriginCertificate()
+                ? "Cloudflare login detected on this machine."
+                : "Cloudflare login is not configured yet. Use Login to Cloudflare.",
+            Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#93C5FD")),
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap
+        };
+
+        var loginButton = new Button
+        {
+            Content = "Login to Cloudflare",
+            Width = 180,
+            Classes = { "warn" }
+        };
+
+        var saveButton = new Button
+        {
+            Content = "Save",
+            Width = 110,
+            Classes = { "primary" }
+        };
+
+        var cancelButton = new Button
+        {
+            Content = "Cancel",
+            Width = 110
+        };
+
+        loginButton.Click += async (_, _) =>
+        {
+            try
+            {
+                statusBlock.Text = "Starting Cloudflare login. Finish it in the browser window opened by cloudflared.";
+                var tools = await ToolResolver.EnsureRequiredAsync(folder, "cloudflare-name", settings, AppendLog, CancellationToken.None);
+                await CloudflareNamedTunnelService.LoginAsync(tools.CloudflaredPath!, folder, AppendLog, CancellationToken.None);
+                statusBlock.Text = "Cloudflare login completed. You can now save and use Start.";
+            }
+            catch (Exception ex)
+            {
+                statusBlock.Text = "Cloudflare login failed: " + ex.Message;
+            }
+        };
+
+        saveButton.Click += (_, _) =>
+        {
+            var tunnelName = (tunnelNameBox.Text ?? string.Empty).Trim();
+            var hostname = (hostnameBox.Text ?? string.Empty).Trim();
+
+            if (string.IsNullOrWhiteSpace(tunnelName) || string.IsNullOrWhiteSpace(hostname) || !hostname.Contains('.', StringComparison.Ordinal))
+            {
+                statusBlock.Text = "Fill in a tunnel name and a valid public hostname.";
+                return;
+            }
+
+            _loadedTunnelSettings.CloudflareNamedTunnelName = tunnelName;
+            _loadedTunnelSettings.CloudflareNamedHostname = hostname;
+            SaveTunnelSettingsForFolder(folder);
+            statusBlock.Text = "Cloudflare Name settings saved.";
+            dialog.Close(true);
+        };
+
+        cancelButton.Click += (_, _) => dialog.Close(false);
+
+        var layout = new Grid
+        {
+            Margin = new Thickness(16),
+            RowDefinitions = new RowDefinitions("Auto,Auto,Auto,*,Auto"),
+            ColumnDefinitions = new ColumnDefinitions("Auto,*"),
+            RowSpacing = 12,
+            ColumnSpacing = 12
+        };
+
+        layout.Children.Add(new TextBlock { Text = "Tunnel name", VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center });
+        layout.Children.Add(tunnelNameBox);
+        Grid.SetColumn(tunnelNameBox, 1);
+
+        var hostnameLabel = new TextBlock { Text = "Public hostname", VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center };
+        layout.Children.Add(hostnameLabel);
+        Grid.SetRow(hostnameLabel, 1);
+
+        layout.Children.Add(hostnameBox);
+        Grid.SetRow(hostnameBox, 1);
+        Grid.SetColumn(hostnameBox, 1);
+
+        var helpBlock = new TextBlock
+        {
+            Text = "This provider uses a named public Cloudflare tunnel. The hostname must belong to a domain already added to your Cloudflare account.",
+            TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+            Foreground = new Avalonia.Media.SolidColorBrush(Avalonia.Media.Color.Parse("#CBD5E1"))
+        };
+        layout.Children.Add(helpBlock);
+        Grid.SetRow(helpBlock, 2);
+        Grid.SetColumnSpan(helpBlock, 2);
+
+        layout.Children.Add(statusBlock);
+        Grid.SetRow(statusBlock, 3);
+        Grid.SetColumnSpan(statusBlock, 2);
+
+        var buttons = new StackPanel
+        {
+            Orientation = Avalonia.Layout.Orientation.Horizontal,
+            Spacing = 8,
+            HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right
+        };
+        buttons.Children.Add(loginButton);
+        buttons.Children.Add(saveButton);
+        buttons.Children.Add(cancelButton);
+
+        layout.Children.Add(buttons);
+        Grid.SetRow(buttons, 4);
+        Grid.SetColumnSpan(buttons, 2);
+
+        dialog.Content = layout;
+        await dialog.ShowDialog(this);
     }
 
     private async Task EnsureTranslationCallbackServerAsync()
@@ -654,27 +970,8 @@ public partial class MainWindow : Window
     {
         StopAutoMergeWatcher();
 
-        var downloadsFolder = GetDownloadsFolderPath();
-        if (string.IsNullOrWhiteSpace(downloadsFolder) || !Directory.Exists(downloadsFolder))
-        {
-            AppendLog("Downloads fallback is unavailable. Direct translation URL pipeline will stay active.");
-            return;
-        }
-
         _downloadsWatcherCts = new CancellationTokenSource();
-        _downloadsWatcher = new FileSystemWatcher(downloadsFolder)
-        {
-            IncludeSubdirectories = false,
-            Filter = "*.*",
-            NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime,
-            EnableRaisingEvents = true,
-        };
-
-        _downloadsWatcher.Created += DownloadsWatcher_OnChanged;
-        _downloadsWatcher.Changed += DownloadsWatcher_OnChanged;
-        _downloadsWatcher.Renamed += DownloadsWatcher_OnRenamed;
-
-        AppendLog("Watching Downloads as fallback for translated audio: " + downloadsFolder);
+        AppendLog("Auto merge is armed. The app will use direct translation callbacks and save audio into translated_audio.");
     }
 
     private void StopAutoMergeWatcher()
@@ -748,7 +1045,7 @@ public partial class MainWindow : Window
             AppendLog("Auto-merge failed: " + ex);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                _ = ShowMessageAsync("Автосборка перевода", ex.Message);
+                _ = ShowMessageAsync("Auto merge", ex.Message);
             });
         }
     }
@@ -775,7 +1072,7 @@ public partial class MainWindow : Window
             AppendLog("Direct translation pipeline failed: " + ex);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
-                _ = ShowMessageAsync("Автосборка перевода", ex.Message);
+                _ = ShowMessageAsync("Auto merge", ex.Message);
             });
         }
     }
@@ -814,11 +1111,12 @@ public partial class MainWindow : Window
                 return;
             }
 
-            await Dispatcher.UIThread.InvokeAsync(() => SetBusy(true, "Автосборка перевода..."));
-            SetSummary("Перевод найден. Собираю итоговый файл...");
+            await Dispatcher.UIThread.InvokeAsync(() => SetBusy(true, "Auto merge in progress..."));
+            SetSummary("Translated audio detected. Building output file...");
 
             var selectedTunnel = await Dispatcher.UIThread.InvokeAsync(GetSelectedTunnelProvider);
-            var tools = await ToolResolver.EnsureRequiredAsync(folder, selectedTunnel.Key, AppendLog, cancellationToken);
+            var tunnelSettings = await Dispatcher.UIThread.InvokeAsync(CollectTunnelSettings);
+            var tools = await ToolResolver.EnsureRequiredAsync(folder, selectedTunnel.Key, tunnelSettings, AppendLog, cancellationToken);
 
             var storedAudioPath = BuildStoredTranslatedAudioPath(folder, targetEntry.FileName, payload.SuggestedFileName ?? payload.Url);
             Directory.CreateDirectory(Path.GetDirectoryName(storedAudioPath)!);
@@ -831,7 +1129,7 @@ public partial class MainWindow : Window
             {
                 AppendLog("Translated audio saved to: " + storedAudioPath);
                 SetStatus("Running");
-                SetSummary("Перевод получен и сохранён. Автосклейка отключена.");
+                SetSummary("Translated audio was saved to translated_audio. Auto merge is off.");
                 return;
             }
 
@@ -846,8 +1144,9 @@ public partial class MainWindow : Window
                 AppendLog,
                 cancellationToken);
 
+            AppendLog("Merged translated video saved to: " + outputPath);
             SetStatus("Running");
-            SetSummary("Перевод подхвачен автоматически. Итоговый файл сохранён в merged_output.");
+            SetSummary("Translated audio was merged successfully. Output saved to merged_output.");
         }
         finally
         {
@@ -862,6 +1161,7 @@ public partial class MainWindow : Window
         {
             var normalized = NormalizeVideoSrc(payload.VideoSrc);
             var matched = _workspace.Entries.FirstOrDefault(x =>
+                string.Equals(NormalizeVideoSrc(x.VotHelperUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(NormalizeVideoSrc(x.PlaybackUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(NormalizeVideoSrc(x.TranslationUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
                 string.Equals(NormalizeVideoSrc(x.OriginalUrl), normalized, StringComparison.OrdinalIgnoreCase));
@@ -981,7 +1281,7 @@ public partial class MainWindow : Window
             if (Directory.Exists(downloads))
                 return downloads;
 
-            downloads = Path.Combine(home, "Загрузки");
+            downloads = Path.Combine(home, "Р—Р°РіСЂСѓР·РєРё");
             if (Directory.Exists(downloads))
                 return downloads;
         }
@@ -1007,6 +1307,7 @@ public partial class MainWindow : Window
         _scanButton.IsEnabled = !busy;
         _fixDnsButton.IsEnabled = true;
         _dependenciesButton.IsEnabled = !busy;
+        _tunnelSetupButton.IsEnabled = !busy && !_serverRunner.IsRunning;
         _mergeTranslationCheckBox.IsEnabled = !busy;
         _proxyModeCheckBox.IsEnabled = !busy && !_serverRunner.IsRunning;
         _portNumeric.IsEnabled = !busy && !_serverRunner.IsRunning;
@@ -1025,13 +1326,54 @@ public partial class MainWindow : Window
 
     private void AppendLog(string message)
     {
+        var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+        if (_persistentLogEnabled)
+            AppendPersistentLogLine(line);
+
         Dispatcher.UIThread.Post(() =>
         {
-            var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
-            var current = _logTextBox.Text ?? string.Empty;
-            _logTextBox.Text = string.IsNullOrWhiteSpace(current) ? line : current + Environment.NewLine + line;
+            _uiLogLines.Enqueue(line);
+            while (_uiLogLines.Count > MaxUiLogLines)
+                _uiLogLines.Dequeue();
+
+            _logTextBox.Text = string.Join(Environment.NewLine, _uiLogLines);
             _logTextBox.CaretIndex = (_logTextBox.Text ?? string.Empty).Length;
         });
+    }
+
+    private void BeginPersistentLogSession(string folder, string selectedTunnelDisplayName)
+    {
+        try
+        {
+            Directory.CreateDirectory(AppContext.BaseDirectory);
+            var divider = new string('-', 80);
+            var header = $"{divider}{Environment.NewLine}START {DateTime.Now:yyyy-MM-dd HH:mm:ss} | Tunnel: {selectedTunnelDisplayName} | Folder: {folder}{Environment.NewLine}";
+            lock (_logFileLock)
+            {
+                File.AppendAllText(_persistentLogPath, header, Encoding.UTF8);
+            }
+
+            _persistentLogEnabled = true;
+        }
+        catch
+        {
+            _persistentLogEnabled = false;
+        }
+    }
+
+    private void AppendPersistentLogLine(string line)
+    {
+        try
+        {
+            lock (_logFileLock)
+            {
+                File.AppendAllText(_persistentLogPath, line + Environment.NewLine, Encoding.UTF8);
+            }
+        }
+        catch
+        {
+            _persistentLogEnabled = false;
+        }
     }
 
     private string? GetPublicHost()

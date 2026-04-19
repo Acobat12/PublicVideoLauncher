@@ -22,6 +22,10 @@ public sealed class ToolPaths
     public string? NgrokPath { get; init; }
     public string? SshPath { get; init; }
     public string? TailscalePath { get; init; }
+    public string? ZrokPath { get; init; }
+    public string? LocalTunnelPath { get; init; }
+    public string? XTunnelPath { get; init; }
+    public string? VkTunnelPath { get; init; }
     public required string CaddyPath { get; init; }
     public required string FfmpegPath { get; init; }
 }
@@ -44,6 +48,10 @@ public static class ToolResolver
             CreateToolStatus("ngrok", rootFolder),
             CreateToolStatus("ssh", rootFolder),
             CreateToolStatus("tailscale", rootFolder),
+            CreateToolStatus("zrok", rootFolder),
+            CreateToolStatus("localtunnel", rootFolder),
+            CreateToolStatus("xtunnel", rootFolder),
+            CreateToolStatus("vk-tunnel", rootFolder),
         ];
     }
 
@@ -54,10 +62,14 @@ public static class ToolResolver
         return normalized switch
         {
             "cloudflare tunnel" or "cloudflared" => ["ffmpeg", "caddy", "cloudflared"],
+            "cloudflare name" or "cloudflare-name" => ["ffmpeg", "caddy", "cloudflared"],
             "ngrok" => ["ffmpeg", "caddy", "ngrok"],
-            "localhost.run" => ["ffmpeg", "caddy", "ssh"],
-            "pinggy" => ["ffmpeg", "caddy", "ssh"],
-            "tailscale funnel" => ["ffmpeg", "caddy", "tailscale"],
+            "localhost.run" or "localhostrun" => ["ffmpeg", "caddy", "ssh"],
+            "tailscale funnel" or "tailscale-funnel" => ["ffmpeg", "caddy", "tailscale"],
+            "zrok" => ["ffmpeg", "caddy", "zrok"],
+            "localtunnel" => ["ffmpeg", "caddy", "localtunnel"],
+            "xtunnel" => ["ffmpeg", "caddy", "xtunnel"],
+            "vk tunnel" or "vk-tunnel" => ["ffmpeg", "caddy", "vk-tunnel"],
             _ => ["ffmpeg", "caddy"],
         };
     }
@@ -69,8 +81,14 @@ public static class ToolResolver
                text.Contains("caddy", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("cloudflared", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("ngrok", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("localhost.run", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("tailscale", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("ssh", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("zrok", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("localtunnel", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("lt ", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("xtunnel", StringComparison.OrdinalIgnoreCase) ||
+               text.Contains("vk-tunnel", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("install", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("download", StringComparison.OrdinalIgnoreCase) ||
                text.Contains("GitHub asset", StringComparison.OrdinalIgnoreCase);
@@ -93,6 +111,7 @@ public static class ToolResolver
                 "ffmpeg" => await EnsureFfmpegAsync(rootFolder, log, cancellationToken, progress),
                 "caddy" => await EnsureCaddyAsync(rootFolder, log, cancellationToken, progress),
                 "cloudflared" => await EnsureCloudflaredAsync(rootFolder, log, cancellationToken, progress),
+                "zrok" => await EnsureZrokAsync(rootFolder, log, cancellationToken, progress),
                 _ => throw new InvalidOperationException($"Unsupported automatic install for tool: {toolName}")
             };
         }
@@ -122,6 +141,7 @@ public static class ToolResolver
     public static async Task<ToolPaths> EnsureRequiredAsync(
         string rootFolder,
         string tunnelProvider,
+        TunnelLaunchSettings settings,
         Action<string> log,
         CancellationToken cancellationToken = default)
     {
@@ -135,21 +155,61 @@ public static class ToolResolver
         string? ngrokPath = null;
         string? sshPath = null;
         string? tailscalePath = null;
+        string? zrokPath = null;
+        string? localTunnelPath = null;
+        string? xTunnelPath = null;
+        string? vkTunnelPath = null;
 
         switch ((tunnelProvider ?? string.Empty).Trim().ToLowerInvariant())
         {
             case "cloudflared":
+            case "cloudflare-name":
                 cloudflaredPath = await EnsureCloudflaredAsync(rootFolder, log, cancellationToken, progress: null);
                 break;
             case "ngrok":
-                ngrokPath = RequireInstalledTool("ngrok", rootFolder, "ngrok is required for the selected tunnel provider. Install ngrok, run ngrok config add-authtoken if needed, then try again.");
+                ngrokPath = ResolveSelectedProviderPath(
+                    "ngrok",
+                    rootFolder,
+                    settings,
+                    "ngrok is required for the selected tunnel provider. Install ngrok or point the app to ngrok.exe, then try again.");
                 break;
             case "localhost.run":
-            case "pinggy":
-                sshPath = RequireInstalledTool("ssh", rootFolder, "OpenSSH ssh client is required for the selected tunnel provider. Install ssh and try again.");
+                sshPath = ResolveSelectedProviderPath(
+                    "ssh",
+                    rootFolder,
+                    settings,
+                    "OpenSSH client is required for localhost.run. Install ssh / OpenSSH client or point the app to ssh.exe, then try again.");
                 break;
-            case "tailscale funnel":
-                tailscalePath = RequireInstalledTool("tailscale", rootFolder, "Tailscale CLI is required for Tailscale Funnel. Install Tailscale, sign in, enable Funnel permissions, then try again.");
+            case "tailscale-funnel":
+                tailscalePath = ResolveSelectedProviderPath(
+                    "tailscale",
+                    rootFolder,
+                    settings,
+                    "Tailscale CLI is required for Tailscale Funnel. Install tailscale and sign in, or point the app to tailscale.exe, then try again.");
+                break;
+            case "zrok":
+                zrokPath = ResolveCustomPathIfProvided(settings) ?? await EnsureZrokAsync(rootFolder, log, cancellationToken, progress: null);
+                break;
+            case "localtunnel":
+                localTunnelPath = ResolveSelectedProviderPath(
+                    "localtunnel",
+                    rootFolder,
+                    settings,
+                    "LocalTunnel is required for the selected tunnel provider. Install localtunnel globally (lt/localtunnel), point the app to lt / localtunnel / npx, or make npx available in PATH, then try again.");
+                break;
+            case "xtunnel":
+                xTunnelPath = ResolveSelectedProviderPath(
+                    "xtunnel",
+                    rootFolder,
+                    settings,
+                    "xTunnel is required for the selected tunnel provider. Install xTunnel or point the app to xTunnel.exe, then try again.");
+                break;
+            case "vk-tunnel":
+                vkTunnelPath = ResolveSelectedProviderPath(
+                    "vk-tunnel",
+                    rootFolder,
+                    settings,
+                    "VK Tunnel is required for the selected tunnel provider. Install @vkontakte/vk-tunnel globally, point the app to vk-tunnel.cmd / vk-tunnel.js, or make npx available in PATH, then try again.");
                 break;
             default:
                 throw new InvalidOperationException($"Unsupported tunnel provider: {tunnelProvider}");
@@ -163,6 +223,10 @@ public static class ToolResolver
             NgrokPath = ngrokPath,
             SshPath = sshPath,
             TailscalePath = tailscalePath,
+            ZrokPath = zrokPath,
+            LocalTunnelPath = localTunnelPath,
+            XTunnelPath = xTunnelPath,
+            VkTunnelPath = vkTunnelPath,
         };
     }
 
@@ -173,6 +237,55 @@ public static class ToolResolver
             throw new FileNotFoundException(message);
 
         return path;
+    }
+
+    private static string? RequireInstalledToolOrNull(string toolName, string rootFolder)
+    {
+        var path = GetCommandPathIfExists(toolName, rootFolder);
+        return string.IsNullOrWhiteSpace(path) ? null : path;
+    }
+
+    private static string? ResolveCustomPathIfProvided(TunnelLaunchSettings settings)
+    {
+        var customPath = (settings.CustomCliPath ?? string.Empty).Trim().Trim('"');
+        if (string.IsNullOrWhiteSpace(customPath))
+            return null;
+
+        if (!File.Exists(customPath))
+            throw new FileNotFoundException($"The custom tunnel CLI path does not exist: {customPath}");
+
+        return customPath;
+    }
+
+    private static string ResolveSelectedProviderPath(string toolName, string rootFolder, TunnelLaunchSettings settings, string message)
+    {
+        var customPath = ResolveCustomPathIfProvided(settings);
+        if (!string.IsNullOrWhiteSpace(customPath))
+            return customPath;
+
+        if (toolName.Equals("vk-tunnel", StringComparison.OrdinalIgnoreCase))
+        {
+            var explicitVkTool = RequireInstalledToolOrNull(toolName, rootFolder);
+            if (!string.IsNullOrWhiteSpace(explicitVkTool))
+                return explicitVkTool;
+
+            var npxPath = FindNpxPath(rootFolder);
+            if (!string.IsNullOrWhiteSpace(npxPath))
+                return npxPath;
+        }
+
+        if (toolName.Equals("localtunnel", StringComparison.OrdinalIgnoreCase))
+        {
+            var explicitLocalTunnel = RequireInstalledToolOrNull(toolName, rootFolder);
+            if (!string.IsNullOrWhiteSpace(explicitLocalTunnel))
+                return explicitLocalTunnel;
+
+            var npxPath = FindNpxPath(rootFolder);
+            if (!string.IsNullOrWhiteSpace(npxPath))
+                return npxPath;
+        }
+
+        return RequireInstalledTool(toolName, rootFolder, message);
     }
 
     private static async Task<string> EnsureFfmpegAsync(
@@ -238,6 +351,24 @@ public static class ToolResolver
         return await InstallCloudflaredPortableAsync(rootFolder, log, cancellationToken, progress);
     }
 
+    private static async Task<string> EnsureZrokAsync(
+        string rootFolder,
+        Action<string> log,
+        CancellationToken cancellationToken,
+        Action<ToolInstallProgress>? progress)
+    {
+        var existing = GetCommandPathIfExists("zrok", rootFolder);
+        if (!string.IsNullOrWhiteSpace(existing))
+        {
+            log($"zrok found: {existing}");
+            progress?.Invoke(new ToolInstallProgress { ToolName = "zrok", Stage = "Already installed", BytesReceived = 1, TotalBytes = 1 });
+            return existing;
+        }
+
+        throw new FileNotFoundException(
+            $"zrok not found. Install zrok manually or place it into {GetPortableToolPath("zrok", rootFolder)}.");
+    }
+
     public static string GetToolsRoot(string rootFolder)
     {
         var toolsRoot = Path.Combine(rootFolder, ".tools");
@@ -283,21 +414,19 @@ public static class ToolResolver
             {
                 Name = "ngrok",
                 DisplayName = "ngrok",
-                Description = "Creates a public HTTPS URL using the ngrok agent. Usually requires ngrok to be installed and authenticated.",
-                DownloadUrl = "https://ngrok.com/download",
-                InstallationHint = "Install ngrok manually, then run ngrok config add-authtoken if your account requires it. The app will detect ngrok automatically from PATH.",
+                Description = "Creates a public ngrok URL for the local player. Usually requires an ngrok authtoken in Tunnel auth on first use.",
+                DownloadUrl = "https://ngrok.com/docs/agent",
+                InstallationHint = GetNgrokInstallationHint(rootFolder),
                 SupportsAutomaticInstall = false,
                 DetectedPath = GetCommandPathIfExists("ngrok", rootFolder),
             },
             "ssh" => new ToolStatus
             {
                 Name = "ssh",
-                DisplayName = "OpenSSH ssh",
-                Description = "Used for localhost.run and Pinggy SSH reverse tunnels.",
-                DownloadUrl = "https://learn.microsoft.com/windows-server/administration/openssh/openssh_install_firstuse",
-                InstallationHint = OperatingSystem.IsWindows()
-                    ? "Windows: install the built-in OpenSSH Client optional feature if ssh.exe is missing. The app will detect ssh automatically from PATH."
-                    : "Linux/macOS: ssh is usually already installed. If missing, install the OpenSSH client package and retry.",
+                DisplayName = "OpenSSH Client",
+                Description = "Used by localhost.run. The app starts an SSH reverse tunnel to get a public HTTPS URL.",
+                DownloadUrl = "https://localhost.run/docs/cli/",
+                InstallationHint = GetSshInstallationHint(rootFolder),
                 SupportsAutomaticInstall = false,
                 DetectedPath = GetCommandPathIfExists("ssh", rootFolder),
             },
@@ -305,11 +434,51 @@ public static class ToolResolver
             {
                 Name = "tailscale",
                 DisplayName = "Tailscale",
-                Description = "Used for Tailscale Funnel public HTTPS URLs. Requires a signed-in Tailscale node with Funnel permissions.",
-                DownloadUrl = "https://tailscale.com/download",
-                InstallationHint = "Install Tailscale, sign in, and make sure Funnel is allowed for your tailnet. The app will detect the tailscale CLI automatically from PATH.",
+                Description = "Used for Tailscale Funnel. The machine must already have Tailscale installed, logged in, and allowed to use Funnel.",
+                DownloadUrl = "https://tailscale.com/kb/1223/funnel",
+                InstallationHint = GetTailscaleInstallationHint(rootFolder),
                 SupportsAutomaticInstall = false,
                 DetectedPath = GetCommandPathIfExists("tailscale", rootFolder),
+            },
+            "zrok" => new ToolStatus
+            {
+                Name = "zrok",
+                DisplayName = "zrok",
+                Description = "Creates a public zrok share URL for the local player after the machine is enabled with a zrok account token.",
+                DownloadUrl = "https://docs.zrok.io/docs/getting-started/",
+                InstallationHint = GetZrokInstallationHint(rootFolder),
+                SupportsAutomaticInstall = false,
+                DetectedPath = GetCommandPathIfExists("zrok", rootFolder),
+            },
+            "localtunnel" => new ToolStatus
+            {
+                Name = "localtunnel",
+                DisplayName = "LocalTunnel",
+                Description = "Creates a public LocalTunnel URL for the local player. Some visitors may still see the service password/consent page.",
+                DownloadUrl = "https://github.com/localtunnel/localtunnel",
+                InstallationHint = GetLocalTunnelInstallationHint(rootFolder),
+                SupportsAutomaticInstall = false,
+                DetectedPath = GetCommandPathIfExists("localtunnel", rootFolder) ?? FindNpxPath(rootFolder),
+            },
+            "xtunnel" => new ToolStatus
+            {
+                Name = "xtunnel",
+                DisplayName = "xTunnel",
+                Description = "Creates a public xTunnel URL for the local player after client activation.",
+                DownloadUrl = "https://xtunnel.ru/",
+                InstallationHint = GetXTunnelInstallationHint(rootFolder),
+                SupportsAutomaticInstall = false,
+                DetectedPath = GetCommandPathIfExists("xtunnel", rootFolder),
+            },
+            "vk-tunnel" => new ToolStatus
+            {
+                Name = "vk-tunnel",
+                DisplayName = "VK Tunnel",
+                Description = "Creates a public VK Tunnel URL for the local player when the provider is available.",
+                DownloadUrl = "https://dev.vk.com/ru/libraries/tunnel",
+                InstallationHint = GetVkTunnelInstallationHint(rootFolder),
+                SupportsAutomaticInstall = false,
+                DetectedPath = RequireInstalledToolOrNull("vk-tunnel", rootFolder),
             },
             _ => throw new InvalidOperationException($"Unsupported tool: {toolName}")
         };
@@ -341,6 +510,162 @@ public static class ToolResolver
         return $"The app downloads the latest platform-specific cloudflared build for this OS, shows download progress, and extracts the binary into {portablePath}. Manual fallback: install it system-wide or copy the binary there.";
     }
 
+    private static string GetZrokInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("zrok", rootFolder);
+        return $"""
+EN:
+  • Install zrok from the official docs or GitHub releases.
+  • Put zrok / zrok.exe into:
+    {portablePath}
+    or point the app to it through the CLI path box.
+  • First-time setup needs a zrok account token. Paste that token into Tunnel auth and the app will try 'zrok enable <TOKEN>' before creating the public share.
+  • After the machine is already enabled, Tunnel auth can be left empty and the app will run 'zrok share public 127.0.0.1:<PORT>'.
+
+RU:
+  • Установите zrok с официальной документации или GitHub releases.
+  • Поместите zrok / zrok.exe в:
+    {portablePath}
+    или укажите путь через поле CLI path.
+  • Для первого запуска нужен account token zrok. Вставьте его в Tunnel auth, и программа попробует выполнить 'zrok enable <TOKEN>' перед созданием публичной ссылки.
+  • Если эта машина уже была включена в zrok, поле Tunnel auth можно оставить пустым: программа запустит 'zrok share public 127.0.0.1:<ПОРТ>'.
+""";
+    }
+
+    private static string GetNgrokInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("ngrok", rootFolder);
+        return $"""
+EN:
+  • Install ngrok from the official download page.
+  • Put ngrok / ngrok.exe into:
+    {portablePath}
+    or point the app to it through the CLI path box.
+  • On first use, paste your ngrok authtoken into Tunnel auth. The app will run 'ngrok config add-authtoken <TOKEN>' before starting the tunnel.
+  • After ngrok is already configured on this machine, Tunnel auth can be left empty.
+
+RU:
+  • Установите ngrok с официальной страницы загрузки.
+  • Поместите ngrok / ngrok.exe в:
+    {portablePath}
+    или укажите путь через поле CLI path.
+  • При первом запуске вставьте authtoken ngrok в Tunnel auth. Программа попробует выполнить 'ngrok config add-authtoken <TOKEN>' перед стартом туннеля.
+  • Если ngrok уже настроен на этой машине, поле Tunnel auth можно оставить пустым.
+""";
+    }
+
+    private static string GetSshInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("ssh", rootFolder);
+        return $"""
+EN:
+  • localhost.run uses the standard OpenSSH client.
+  • On modern Windows, ssh.exe is often already available. If not, install the optional OpenSSH Client Windows feature or point the app to ssh.exe.
+  • You can also place ssh.exe into:
+    {portablePath}
+  • The app uses a free localhost.run tunnel via SSH: 'ssh -R 80:localhost:<PORT> nokey@localhost.run'.
+
+RU:
+  • localhost.run использует обычный OpenSSH client.
+  • В современных Windows ssh.exe часто уже установлен. Если его нет, установите optional feature OpenSSH Client или укажите путь к ssh.exe.
+  • Также можно положить ssh.exe в:
+    {portablePath}
+  • Программа запускает бесплатный localhost.run туннель через SSH: 'ssh -R 80:localhost:<PORT> nokey@localhost.run'.
+""";
+    }
+
+    private static string GetTailscaleInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("tailscale", rootFolder);
+        return $"""
+EN:
+  • Install the Tailscale client and sign in on this machine.
+  • Make sure Funnel is enabled for your tailnet and this device is allowed to use it.
+  • Put tailscale / tailscale.exe into:
+    {portablePath}
+    or point the app to it through the CLI path box.
+  • The app starts Funnel with the local Caddy server as the backend, then waits for the public ts.net URL.
+
+RU:
+  • Установите клиент Tailscale и войдите в аккаунт на этой машине.
+  • Убедитесь, что Funnel включён для вашего tailnet и это устройство имеет право его использовать.
+  • Поместите tailscale / tailscale.exe в:
+    {portablePath}
+    или укажите путь через поле CLI path.
+  • Программа запускает Funnel с локальным Caddy как backend и ждёт публичный URL вида ts.net.
+""";
+    }
+
+    private static string GetLocalTunnelInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("localtunnel", rootFolder);
+        return $"""
+EN:
+  • Install LocalTunnel globally with Node.js: npm install -g localtunnel
+  • The app can use lt, localtunnel, or npx localtunnel.
+  • You can also place lt / localtunnel into:
+    {portablePath}
+    or point the app to it through the CLI path box.
+  • Public visitors may see LocalTunnel's password / consent page. That page is controlled by the LocalTunnel service, not by this app.
+
+RU:
+  • Установите LocalTunnel глобально через Node.js: npm install -g localtunnel
+  • Программа умеет запускать lt, localtunnel или npx localtunnel.
+  • Также можно положить lt / localtunnel в:
+    {portablePath}
+    или указать путь через поле CLI path.
+  • У внешних пользователей может появиться страница с паролем / consent от LocalTunnel. Это поведение самого сервиса, а не приложения.
+""";
+    }
+
+    private static string GetXTunnelInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("xtunnel", rootFolder);
+        return $"""
+EN:
+  • Install xTunnel manually from the official site.
+  • Put xtunnel.exe or xTunnel.exe into:
+    {portablePath}
+  • You can also keep it in the same .tools/xtunnel folder, in PATH, or point the app to it through the CLI path box.
+  • If your xTunnel account or license requires activation, paste the key into Tunnel auth.
+  • First-run flow usually looks like: xtunnel.exe register <KEY>, then xtunnel.exe http <PORT>.
+
+RU:
+  • Установите xTunnel вручную с официального сайта.
+  • Поместите xtunnel.exe или xTunnel.exe в:
+    {portablePath}
+  • Также можно держать его в той же папке .tools/xtunnel, добавить в PATH или указать путь через поле CLI path.
+  • Если для xTunnel нужны аккаунт, лицензия или активация, вставьте ключ в Tunnel auth.
+  • Типичный первый запуск: xtunnel.exe register <КЛЮЧ>, затем xtunnel.exe http <ПОРТ>.
+""";
+    }
+
+    private static string GetVkTunnelInstallationHint(string rootFolder)
+    {
+        var portablePath = GetPortableToolPath("vk-tunnel", rootFolder);
+        return $"""
+EN:
+  • Install Node.js first.
+  • Then install VK Tunnel globally: npm install -g @vkontakte/vk-tunnel
+  • The app can use vk-tunnel.cmd, vk-tunnel.js, or npx when the package is installed globally.
+  • You can also place vk-tunnel.cmd into:
+    {portablePath}
+    or point the app to it through the CLI path box.
+  • On first launch VK Tunnel may open the official VK authorization page in your browser and wait for confirmation before the public URL appears.
+  • In this window, plain npx alone is treated only as a fallback launcher, not as proof that @vkontakte/vk-tunnel is installed.
+
+RU:
+  • Сначала установите Node.js.
+  • Затем установите VK Tunnel глобально: npm install -g @vkontakte/vk-tunnel
+  • Программа умеет запускать vk-tunnel.cmd, vk-tunnel.js или npx, если пакет установлен глобально.
+  • Также можно положить vk-tunnel.cmd в:
+    {portablePath}
+    или указать путь через поле CLI path.
+  • При первом запуске VK Tunnel может открыть официальную страницу авторизации VK в браузере и ждать подтверждения перед выдачей публичного URL.
+  • В этом окне plain npx считается только запасным launcher'ом, а не доказательством, что @vkontakte/vk-tunnel установлен.
+""";
+    }
+
     private static string GetPortableToolPath(string toolName, string rootFolder)
     {
         var toolsRoot = GetToolsRoot(rootFolder);
@@ -358,6 +683,34 @@ public static class ToolResolver
             "cloudflared" => OperatingSystem.IsWindows()
                 ? Path.Combine(toolsRoot, "cloudflared", "cloudflared.exe")
                 : Path.Combine(toolsRoot, "cloudflared", "cloudflared"),
+
+            "ngrok" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "ngrok", "ngrok.exe")
+                : Path.Combine(toolsRoot, "ngrok", "ngrok"),
+
+            "ssh" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "ssh", "ssh.exe")
+                : Path.Combine(toolsRoot, "ssh", "ssh"),
+
+            "tailscale" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "tailscale", "tailscale.exe")
+                : Path.Combine(toolsRoot, "tailscale", "tailscale"),
+
+            "zrok" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "zrok", "zrok.exe")
+                : Path.Combine(toolsRoot, "zrok", "zrok"),
+
+            "localtunnel" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "localtunnel", "lt.cmd")
+                : Path.Combine(toolsRoot, "localtunnel", "lt"),
+
+            "xtunnel" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "xtunnel", "xtunnel.exe")
+                : Path.Combine(toolsRoot, "xtunnel", "xtunnel"),
+
+            "vk-tunnel" => OperatingSystem.IsWindows()
+                ? Path.Combine(toolsRoot, "vk-tunnel", "vk-tunnel.cmd")
+                : Path.Combine(toolsRoot, "vk-tunnel", "vk-tunnel"),
 
             _ => string.Empty
         };
@@ -383,6 +736,45 @@ public static class ToolResolver
             {
                 Path.Combine(GetToolsRoot(rootFolder), "cloudflared", "bin", OperatingSystem.IsWindows() ? "cloudflared.exe" : "cloudflared"),
             },
+            "ngrok" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "ngrok", "bin", OperatingSystem.IsWindows() ? "ngrok.exe" : "ngrok"),
+            },
+            "ssh" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "ssh", "bin", OperatingSystem.IsWindows() ? "ssh.exe" : "ssh"),
+            },
+            "tailscale" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "tailscale", "bin", OperatingSystem.IsWindows() ? "tailscale.exe" : "tailscale"),
+            },
+            "zrok" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "zrok", "bin", OperatingSystem.IsWindows() ? "zrok.exe" : "zrok"),
+            },
+            "localtunnel" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "localtunnel", "bin", OperatingSystem.IsWindows() ? "lt.cmd" : "lt"),
+                Path.Combine(GetToolsRoot(rootFolder), "localtunnel", OperatingSystem.IsWindows() ? "lt.cmd" : "lt"),
+                Path.Combine(GetToolsRoot(rootFolder), "localtunnel", OperatingSystem.IsWindows() ? "localtunnel.cmd" : "localtunnel"),
+            },
+            "xtunnel" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "xtunnel", "bin", OperatingSystem.IsWindows() ? "xtunnel.exe" : "xtunnel"),
+                Path.Combine(GetToolsRoot(rootFolder), "xtunnel", "bin", OperatingSystem.IsWindows() ? "xTunnel.exe" : "xtunnel"),
+                Path.Combine(GetToolsRoot(rootFolder), "xtunnel", OperatingSystem.IsWindows() ? "xTunnel.exe" : "xtunnel"),
+            },
+            "vk-tunnel" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "vk-tunnel", "bin", OperatingSystem.IsWindows() ? "vk-tunnel.cmd" : "vk-tunnel"),
+                Path.Combine(GetToolsRoot(rootFolder), "vk-tunnel", OperatingSystem.IsWindows() ? "vk-tunnel.cmd" : "vk-tunnel"),
+                Path.Combine(GetToolsRoot(rootFolder), "vk-tunnel", "bin", "vk-tunnel.js"),
+            },
+            "npx" => new[]
+            {
+                Path.Combine(GetToolsRoot(rootFolder), "node", "npx.cmd"),
+                Path.Combine(GetToolsRoot(rootFolder), "node", "npx.exe"),
+            },
             _ => Array.Empty<string>()
         };
 
@@ -395,6 +787,38 @@ public static class ToolResolver
         var fromPath = FindInPath(OperatingSystem.IsWindows() ? $"{toolName}.exe" : toolName);
         if (!string.IsNullOrWhiteSpace(fromPath))
             return fromPath;
+
+        if (OperatingSystem.IsWindows() && toolName.Equals("vk-tunnel", StringComparison.OrdinalIgnoreCase))
+        {
+            fromPath = FindInPath("vk-tunnel.cmd") ?? FindInPath("vk-tunnel.exe");
+            if (!string.IsNullOrWhiteSpace(fromPath))
+                return fromPath;
+        }
+
+        if (toolName.Equals("localtunnel", StringComparison.OrdinalIgnoreCase))
+        {
+            if (OperatingSystem.IsWindows())
+                fromPath = FindInPath("lt.cmd") ?? FindInPath("localtunnel.cmd") ?? FindInPath("lt.exe") ?? FindInPath("localtunnel.exe");
+            else
+                fromPath = FindInPath("lt") ?? FindInPath("localtunnel");
+
+            if (!string.IsNullOrWhiteSpace(fromPath))
+                return fromPath;
+        }
+
+        if (OperatingSystem.IsWindows() && toolName.Equals("xtunnel", StringComparison.OrdinalIgnoreCase))
+        {
+            fromPath = FindInPath("xTunnel.exe") ?? FindInPath("xtunnel.exe");
+            if (!string.IsNullOrWhiteSpace(fromPath))
+                return fromPath;
+        }
+
+        if (OperatingSystem.IsWindows() && toolName.Equals("npx", StringComparison.OrdinalIgnoreCase))
+        {
+            fromPath = FindInPath("npx.cmd") ?? FindInPath("npx.exe");
+            if (!string.IsNullOrWhiteSpace(fromPath))
+                return fromPath;
+        }
 
         if (OperatingSystem.IsWindows() && toolName.Equals("cloudflared", StringComparison.OrdinalIgnoreCase))
         {
@@ -436,7 +860,33 @@ public static class ToolResolver
             }
         }
 
+        if (OperatingSystem.IsWindows() && toolName.Equals("ssh", StringComparison.OrdinalIgnoreCase))
+        {
+            var knownCandidates = new[]
+            {
+                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "OpenSSH", "ssh.exe"),
+            };
+
+            foreach (var candidate in knownCandidates)
+            {
+                if (File.Exists(candidate))
+                    return candidate;
+            }
+        }
+
         return null;
+    }
+
+    private static string? FindNpxPath(string rootFolder)
+    {
+        var bundled = GetCommandPathIfExists("npx", rootFolder);
+        if (!string.IsNullOrWhiteSpace(bundled))
+            return bundled;
+
+        if (OperatingSystem.IsWindows())
+            return FindInPath("npx.cmd") ?? FindInPath("npx.exe");
+
+        return FindInPath("npx");
     }
 
     private static string? FindInPath(string fileName)

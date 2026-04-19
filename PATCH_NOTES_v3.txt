@@ -1,0 +1,7 @@
+Patch notes v3
+- xTunnel activation now uses the official register command once instead of two activation attempts.
+- xTunnel startup can retry automatically with --force when LICENSE_BUSY is reported.
+- Tunnel stdout/stderr capture now copies raw streams, which helps tools that do not flush line-by-line.
+- Public URL detection is more tolerant and can detect full URLs or bare domains in logs.
+- VK Tunnel is no longer shown as installed just because npx exists; npx is only used as a runtime fallback when VK Tunnel is selected.
+- Added a bilingual EN/RU tunnel setup guide.

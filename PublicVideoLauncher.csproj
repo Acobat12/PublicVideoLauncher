@@ -19,6 +19,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <Compile Remove="obj\**\*.cs;bin\**\*.cs" />
+    <EmbeddedResource Remove="obj\**;bin\**" />
+    <None Remove="obj\**;bin\**" />
+  </ItemGroup>
+
+  <ItemGroup>
     <AvaloniaResource Include="Assets/AppIcon.png" />
     <AvaloniaResource Include="Assets/AppIcon.ico" />
     <None Include="Assets/AppIcon.icns" CopyToOutputDirectory="PreserveNewest" Condition="('$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('osx'))) or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('OSX')))" />

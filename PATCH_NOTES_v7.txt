@@ -1,0 +1,9 @@
+v7
+- VK Tunnel startup now opens the official VK authorization page automatically when the CLI requests browser login.
+- VK Tunnel process stdin is enabled so the launcher can send ENTER after the authorization grace period.
+- VK Tunnel public URL detection now ignores OAuth links and waits specifically for the real tunnel URL.
+- xTunnel startup error text was normalized to valid C# string formatting.
+- Windows .cmd launch path now uses Concat(...).ToArray() for broader compiler compatibility.
+- Dependencies window now points VK Tunnel to the official VK docs page.
+- Tuna, xTunnel, and VK Tunnel dependency hints were reformatted into multiline EN/RU blocks.
+- Dependency hint boxes were enlarged and aligned for easier reading of long instructions.

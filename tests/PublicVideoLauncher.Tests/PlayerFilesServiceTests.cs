@@ -24,6 +24,7 @@ public sealed class PlayerFilesServiceTests
                 {
                     Id = "sample",
                     Title = "Sample",
+                    VotHelperUrl = "/.public-video-vot/sample.mp4",
                     PlaybackUrl = "/.public-video-cache/sample.play.mp4",
                     TranslationUrl = "/.public-video-cache/sample.proxy.mp4",
                     OriginalUrl = "/Sample.mkv",
@@ -42,6 +43,8 @@ public sealed class PlayerFilesServiceTests
             using var doc = JsonDocument.Parse(json);
             var item = doc.RootElement[0];
             Assert.Equal("/.public-video-cache/sample.play.mp4", item.GetProperty("src").GetString());
+            Assert.Equal("/.public-video-cache/sample.play.mp4", item.GetProperty("playbackSrc").GetString());
+            Assert.Equal("/.public-video-vot/sample.mp4", item.GetProperty("votSrc").GetString());
             Assert.Equal("/.public-video-cache/sample.proxy.mp4", item.GetProperty("translateSrc").GetString());
             Assert.Equal("/Sample.mkv", item.GetProperty("originalSrc").GetString());
         }

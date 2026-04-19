@@ -104,7 +104,7 @@ public partial class ToolSetupWindow : Window
             ["ngrok"] = new ToolUi
             {
                 Name = "ngrok",
-                DownloadUrl = "https://ngrok.com/download",
+                DownloadUrl = "https://ngrok.com/docs/agent",
                 StatusTextBlock = this.FindControl<TextBlock>("NgrokStatusTextBlock")!,
                 PathTextBox = this.FindControl<TextBox>("NgrokPathTextBox")!,
                 HintTextBox = this.FindControl<TextBox>("NgrokHintTextBox")!,
@@ -117,7 +117,7 @@ public partial class ToolSetupWindow : Window
             ["ssh"] = new ToolUi
             {
                 Name = "ssh",
-                DownloadUrl = "https://learn.microsoft.com/windows-server/administration/openssh/openssh_install_firstuse",
+                DownloadUrl = "https://localhost.run/docs/cli/",
                 StatusTextBlock = this.FindControl<TextBlock>("SshStatusTextBlock")!,
                 PathTextBox = this.FindControl<TextBox>("SshPathTextBox")!,
                 HintTextBox = this.FindControl<TextBox>("SshHintTextBox")!,
@@ -130,7 +130,7 @@ public partial class ToolSetupWindow : Window
             ["tailscale"] = new ToolUi
             {
                 Name = "tailscale",
-                DownloadUrl = "https://tailscale.com/download",
+                DownloadUrl = "https://tailscale.com/kb/1223/funnel",
                 StatusTextBlock = this.FindControl<TextBlock>("TailscaleStatusTextBlock")!,
                 PathTextBox = this.FindControl<TextBox>("TailscalePathTextBox")!,
                 HintTextBox = this.FindControl<TextBox>("TailscaleHintTextBox")!,
@@ -139,6 +139,58 @@ public partial class ToolSetupWindow : Window
                 ProgressTextBlock = this.FindControl<TextBlock>("TailscaleProgressTextBlock")!,
                 InstallButton = this.FindControl<Button>("TailscaleInstallButton")!,
                 OpenButton = this.FindControl<Button>("TailscaleOpenButton")!,
+            },
+            ["zrok"] = new ToolUi
+            {
+                Name = "zrok",
+                DownloadUrl = "https://docs.zrok.io/docs/getting-started/",
+                StatusTextBlock = this.FindControl<TextBlock>("ZrokStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("ZrokPathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("ZrokHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("ZrokAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("ZrokProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("ZrokProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("ZrokInstallButton")!,
+                OpenButton = this.FindControl<Button>("ZrokOpenButton")!,
+            },
+            ["localtunnel"] = new ToolUi
+            {
+                Name = "localtunnel",
+                DownloadUrl = "https://github.com/localtunnel/localtunnel",
+                StatusTextBlock = this.FindControl<TextBlock>("LocalTunnelStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("LocalTunnelPathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("LocalTunnelHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("LocalTunnelAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("LocalTunnelProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("LocalTunnelProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("LocalTunnelInstallButton")!,
+                OpenButton = this.FindControl<Button>("LocalTunnelOpenButton")!,
+            },
+            ["xtunnel"] = new ToolUi
+            {
+                Name = "xtunnel",
+                DownloadUrl = "https://xtunnel.ru/",
+                StatusTextBlock = this.FindControl<TextBlock>("XTunnelStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("XTunnelPathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("XTunnelHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("XTunnelAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("XTunnelProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("XTunnelProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("XTunnelInstallButton")!,
+                OpenButton = this.FindControl<Button>("XTunnelOpenButton")!,
+            },
+            ["vk-tunnel"] = new ToolUi
+            {
+                Name = "vk-tunnel",
+                DownloadUrl = "https://dev.vk.com/ru/libraries/tunnel",
+                StatusTextBlock = this.FindControl<TextBlock>("VkTunnelStatusTextBlock")!,
+                PathTextBox = this.FindControl<TextBox>("VkTunnelPathTextBox")!,
+                HintTextBox = this.FindControl<TextBox>("VkTunnelHintTextBox")!,
+                AutoTextBlock = this.FindControl<TextBlock>("VkTunnelAutoTextBlock")!,
+                ProgressBar = this.FindControl<ProgressBar>("VkTunnelProgressBar")!,
+                ProgressTextBlock = this.FindControl<TextBlock>("VkTunnelProgressTextBlock")!,
+                InstallButton = this.FindControl<Button>("VkTunnelInstallButton")!,
+                OpenButton = this.FindControl<Button>("VkTunnelOpenButton")!,
             },
         };
 

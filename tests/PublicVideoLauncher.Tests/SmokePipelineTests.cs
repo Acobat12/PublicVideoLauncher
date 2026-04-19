@@ -27,6 +27,8 @@ public sealed class SmokePipelineTests
             Assert.Equal(2, workspace.Entries.Count);
             Assert.Contains(workspace.Entries, x => x.FileName == "Clip One.mkv" && x.PlaybackUrl.EndsWith("clip-one.play.mp4") && x.TranslationUrl.EndsWith("clip-one.proxy.mp4"));
             Assert.Contains(workspace.Entries, x => x.FileName == "Clip Two.mp4" && x.PlaybackUrl == "/Clip%20Two.mp4" && x.TranslationUrl == "/Clip%20Two.mp4");
+            Assert.Contains(workspace.Entries, x => x.FileName == "Clip One.mkv" && x.VotHelperUrl == "/.public-video-vot/clip-one.mp4");
+            Assert.Contains(workspace.Entries, x => x.FileName == "Clip Two.mp4" && x.VotHelperUrl == "/.public-video-vot/clip-two.mp4");
 
             var service = new PlayerFilesService();
             await service.WriteAllAsync(root, workspace.Entries, null, CancellationToken.None);
@@ -41,6 +43,9 @@ public sealed class SmokePipelineTests
 
             using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(playlistPath));
             Assert.Equal(2, doc.RootElement.GetArrayLength());
+            Assert.Equal("/.public-video-cache/clip-one.play.mp4", doc.RootElement[0].GetProperty("src").GetString());
+            Assert.Equal("/.public-video-cache/clip-one.play.mp4", doc.RootElement[0].GetProperty("playbackSrc").GetString());
+            Assert.Equal("/.public-video-vot/clip-one.mp4", doc.RootElement[0].GetProperty("votSrc").GetString());
             Assert.Contains("const playlistUrl = params.get(\"list\") || \"/playlist.json\";", await File.ReadAllTextAsync(playerPath));
         }
         finally

@@ -28,6 +28,8 @@ public sealed class PlayerFilesService
             id = x.Id,
             title = x.Title,
             src = x.PlaybackUrl,
+            playbackSrc = x.PlaybackUrl,
+            votSrc = x.VotHelperUrl,
             translateSrc = x.TranslationUrl,
             originalSrc = x.OriginalUrl,
             playbackKind = x.PlaybackKind,
@@ -665,29 +667,6 @@ public sealed class PlayerFilesService
         }
       }
 
-      function triggerTranslationDownload(url) {
-        if (!url || seenTranslationDownloads.has(url)) {
-          return;
-        }
-
-        seenTranslationDownloads.add(url);
-
-        try {
-          const suggestedName = sanitizeFileName(getCurrentVideoName()) + ".translated.mp3";
-          const anchor = document.createElement("a");
-          anchor.href = url;
-          anchor.download = suggestedName;
-          anchor.rel = "noopener";
-          anchor.style.display = "none";
-          document.body.appendChild(anchor);
-          anchor.click();
-          anchor.remove();
-          originalConsoleLog("[PVL] Auto-downloading translation", suggestedName, url);
-        } catch (err) {
-          originalConsoleLog("[PVL] Auto-download failed", err);
-        }
-      }
-
       function handleTranslationUrl(url, source) {
         if (!url || seenTranslationDownloads.has(url) || !isTranslationAudioUrl(url)) {
           return;
@@ -697,8 +676,7 @@ public sealed class PlayerFilesService
         window.setTimeout(async () => {
           const handedOff = await notifyApp(url, source);
           if (!handedOff) {
-            seenTranslationDownloads.delete(url);
-            triggerTranslationDownload(url);
+            originalConsoleLog("[PVL] Translation URL was detected but could not be handed off to the app; browser auto-open fallback is disabled", source || "unknown", url);
           }
         }, 50);
       }
@@ -849,6 +827,8 @@ public sealed class PlayerFilesService
         return {
           title: getFileName(item),
           src: item,
+          playbackSrc: item,
+          votSrc: "",
           index
         };
       }
@@ -856,8 +836,21 @@ public sealed class PlayerFilesService
       return {
         title: item.title || getFileName(item.src || ""),
         src: item.src || "",
+        playbackSrc: item.playbackSrc || item.src || "",
+        votSrc: item.votSrc || "",
         index
       };
+    }
+
+    function setVotSource(src) {
+      const normalized = decodePath(src || "");
+      if (normalized) {
+        video.dataset.votSrc = normalized;
+        window.__PVL_VOT_SRC = normalized;
+      } else {
+        delete video.dataset.votSrc;
+        delete window.__PVL_VOT_SRC;
+      }
     }
 
     function samePath(a, b) {
@@ -925,7 +918,8 @@ public sealed class PlayerFilesService
       history.replaceState(null, "", nextUrl.toString());
 
       renderPlaylist();
-      setVideoMeta(item.src);
+      setVideoMeta(item.playbackSrc || item.src);
+      setVotSource(item.votSrc);
       updateNavButtons();
       updateUpNext();
 
@@ -941,7 +935,7 @@ public sealed class PlayerFilesService
       if (currentIndex >= 0 && currentIndex < playlist.length - 1) {
         const nextItem = playlist[currentIndex + 1];
         upNextTitle.textContent = nextItem.title;
-        upNextMeta.textContent = nextItem.src;
+        upNextMeta.textContent = nextItem.playbackSrc || nextItem.src;
       } else {
         upNextTitle.textContent = "End of playlist";
         upNextMeta.textContent = "No next video available.";
@@ -976,7 +970,7 @@ public sealed class PlayerFilesService
           <div class="playlist-src"></div>
         `;
         button.querySelector(".playlist-name").textContent = item.title;
-        button.querySelector(".playlist-src").textContent = item.src;
+        button.querySelector(".playlist-src").textContent = item.playbackSrc || item.src;
         button.addEventListener("click", () => navigateToIndex(index, true));
         playlistEl.appendChild(button);
       });
@@ -1110,7 +1104,7 @@ public sealed class PlayerFilesService
         currentIndex = playlist.findIndex(x => samePath(x.src, decodedSrc));
 
         if (currentIndex < 0 && decodedSrc && isMp4File(decodedSrc)) {
-          playlist.unshift(normalizeItem({ src: decodedSrc, title: getFileName(decodedSrc) }, 0));
+          playlist.unshift(normalizeItem({ src: decodedSrc, playbackSrc: decodedSrc, votSrc: "", title: getFileName(decodedSrc) }, 0));
           currentIndex = 0;
         }
 
@@ -1170,6 +1164,7 @@ public sealed class PlayerFilesService
           nextUrl.searchParams.set("list", playlistUrl);
           history.replaceState(null, "", nextUrl.toString());
 
+          setVotSource(firstItem.votSrc);
           await loadVideoSource(firstItem.src, false);
           return;
         }
@@ -1180,8 +1175,10 @@ public sealed class PlayerFilesService
       }
 
       if (currentIndex >= 0 && playlist[currentIndex]) {
+        setVotSource(playlist[currentIndex].votSrc);
         await loadVideoSource(playlist[currentIndex].src, false);
       } else {
+        setVotSource("");
         await loadVideoSource(rawSrc, false);
       }
     })();

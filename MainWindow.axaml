@@ -99,7 +99,7 @@
             BorderBrush="#24324B"
             Background="#0B1220">
       <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
-            RowDefinitions="Auto,Auto"
+            RowDefinitions="Auto,Auto,Auto"
             ColumnSpacing="10"
             RowSpacing="10">
 
@@ -156,6 +156,29 @@
                  Grid.ColumnSpan="9"
                  IsReadOnly="True"
                  Watermark="Public URL will appear here after start..."/>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Text="Tunnel auth" FontWeight="Bold" VerticalAlignment="Center"/>
+
+        <TextBox x:Name="TunnelAuthTextBox"
+                 Grid.Row="2"
+                 Grid.Column="1"
+                 Grid.ColumnSpan="4"
+                 Watermark="zrok: account token. xTunnel: license key. Optional for Cloudflare / LocalTunnel / VK."/>
+
+        <TextBlock Grid.Row="2" Grid.Column="5" Text="CLI path" FontWeight="Bold" VerticalAlignment="Center"/>
+
+        <TextBox x:Name="TunnelCliPathTextBox"
+                 Grid.Row="2"
+                 Grid.Column="6"
+                 Grid.ColumnSpan="3"
+                 Watermark="Optional path to zrok / lt / xTunnel.exe / vk-tunnel.cmd / npx"/>
+
+        <Button x:Name="TunnelSetupButton"
+                Grid.Row="2"
+                Grid.Column="9"
+                Content="Setup..."
+                IsVisible="False"/>
+
       </Grid>
     </Border>
 
@@ -253,7 +276,7 @@
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
           <CheckBox x:Name="MergeTranslationCheckBox"
                     VerticalAlignment="Center"
-                    Content="Автоподхват перевода, наложение и сохранение"/>
+                    Content="Auto merge translated audio and save output"/>
           <Button x:Name="StartButton" Classes="primary" Content="Start"/>
           <Button x:Name="StopButton" Classes="danger" Content="Stop" IsEnabled="False"/>
           <Button x:Name="CopyUrlButton" Content="Copy URL" IsEnabled="False"/>

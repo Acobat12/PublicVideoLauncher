@@ -18,6 +18,7 @@ public sealed class VideoEntry : INotifyPropertyChanged
     public string OriginalUrl { get; set; } = string.Empty;
     public string PlaybackUrl { get; set; } = string.Empty;
     public string TranslationUrl { get; set; } = string.Empty;
+    public string VotHelperUrl { get; set; } = string.Empty;
 
     public string RelativePath { get; set; } = string.Empty;
     public string RelativeUrl { get; set; } = string.Empty;
