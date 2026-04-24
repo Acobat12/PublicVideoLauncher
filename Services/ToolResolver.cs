@@ -230,6 +230,17 @@ public static class ToolResolver
         };
     }
 
+    public static Task<string> EnsureFfmpegOnlyAsync(
+        string rootFolder,
+        Action<string> log,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(rootFolder))
+            throw new ArgumentException("rootFolder is empty.", nameof(rootFolder));
+
+        return EnsureFfmpegAsync(rootFolder, log, cancellationToken, progress: null);
+    }
+
     private static string RequireInstalledTool(string toolName, string rootFolder, string message)
     {
         var path = GetCommandPathIfExists(toolName, rootFolder);
@@ -351,7 +362,7 @@ public static class ToolResolver
         return await InstallCloudflaredPortableAsync(rootFolder, log, cancellationToken, progress);
     }
 
-    private static async Task<string> EnsureZrokAsync(
+    private static Task<string> EnsureZrokAsync(
         string rootFolder,
         Action<string> log,
         CancellationToken cancellationToken,
@@ -362,11 +373,11 @@ public static class ToolResolver
         {
             log($"zrok found: {existing}");
             progress?.Invoke(new ToolInstallProgress { ToolName = "zrok", Stage = "Already installed", BytesReceived = 1, TotalBytes = 1 });
-            return existing;
+            return Task.FromResult(existing);
         }
 
-        throw new FileNotFoundException(
-            $"zrok not found. Install zrok manually or place it into {GetPortableToolPath("zrok", rootFolder)}.");
+        return Task.FromException<string>(new FileNotFoundException(
+            $"zrok not found. Install zrok manually or place it into {GetPortableToolPath("zrok", rootFolder)}."));
     }
 
     public static string GetToolsRoot(string rootFolder)
@@ -938,14 +949,25 @@ RU:
             Directory.CreateDirectory(extractDir);
             ZipFile.ExtractToDirectory(zipPath, extractDir, true);
 
-            var fileName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
-            var foundExe = Directory.GetFiles(extractDir, fileName, SearchOption.AllDirectories).FirstOrDefault();
+            var ffmpegFileName = OperatingSystem.IsWindows() ? "ffmpeg.exe" : "ffmpeg";
+            var ffprobeFileName = OperatingSystem.IsWindows() ? "ffprobe.exe" : "ffprobe";
+            var foundExe = Directory.GetFiles(extractDir, ffmpegFileName, SearchOption.AllDirectories).FirstOrDefault();
+            var foundProbe = Directory.GetFiles(extractDir, ffprobeFileName, SearchOption.AllDirectories).FirstOrDefault();
 
             if (string.IsNullOrWhiteSpace(foundExe))
                 throw new InvalidOperationException("ffmpeg executable not found inside extracted archive.");
 
             ReportProgress("ffmpeg", "Copying executable", progress);
             File.Copy(foundExe, dstExe, true);
+
+            if (!string.IsNullOrWhiteSpace(foundProbe))
+            {
+                var dstProbe = Path.Combine(Path.GetDirectoryName(dstExe)!, ffprobeFileName);
+                File.Copy(foundProbe, dstProbe, true);
+
+                if (!OperatingSystem.IsWindows())
+                    await EnsureExecutableAsync(dstProbe, cancellationToken);
+            }
 
             if (!OperatingSystem.IsWindows())
                 await EnsureExecutableAsync(dstExe, cancellationToken);

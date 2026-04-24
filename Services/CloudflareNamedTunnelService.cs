@@ -21,6 +21,11 @@ public sealed class CloudflareNamedTunnelPreparation
 public static class CloudflareNamedTunnelService
 {
     public static bool HasOriginCertificate() => File.Exists(GetOriginCertificatePath());
+    private static string GetCredentialsFilePath(string tunnelId)
+    {
+        var cloudflaredDir = Path.GetDirectoryName(GetOriginCertificatePath())!;
+        return Path.Combine(cloudflaredDir, tunnelId + ".json");
+    }
 
     public static string GetOriginCertificatePath()
     {
@@ -48,29 +53,54 @@ public static class CloudflareNamedTunnelService
     }
 
     public static async Task<CloudflareNamedTunnelPreparation> PrepareAsync(
-        string rootFolder,
-        string cloudflaredPath,
-        string workingDirectory,
-        string tunnelName,
-        string hostname,
-        string localUrl,
-        Action<string> log,
-        CancellationToken cancellationToken)
+    string rootFolder,
+    string cloudflaredPath,
+    string workingDirectory,
+    string tunnelName,
+    string hostname,
+    string localUrl,
+    Action<string> log,
+    CancellationToken cancellationToken)
     {
         if (!HasOriginCertificate())
             throw new InvalidOperationException("Cloudflare login is required first. Open Setup... and use Login to Cloudflare.");
 
         var normalizedName = (tunnelName ?? string.Empty).Trim();
         var normalizedHostname = (hostname ?? string.Empty).Trim();
+
         if (string.IsNullOrWhiteSpace(normalizedName))
             throw new InvalidOperationException("Cloudflare Name requires a tunnel name.");
+
         if (string.IsNullOrWhiteSpace(normalizedHostname))
             throw new InvalidOperationException("Cloudflare Name requires a public hostname.");
 
-        var tunnelId = await GetTunnelIdByNameAsync(cloudflaredPath, workingDirectory, normalizedName, cancellationToken);
-        if (string.IsNullOrWhiteSpace(tunnelId))
+        string? tunnelId = await GetTunnelIdByNameAsync(
+            cloudflaredPath,
+            workingDirectory,
+            normalizedName,
+            cancellationToken);
+
+        string? credentialsFile = null;
+
+        if (!string.IsNullOrWhiteSpace(tunnelId))
+        {
+            credentialsFile = GetCredentialsFilePath(tunnelId);
+            if (!File.Exists(credentialsFile))
+            {
+                throw new InvalidOperationException(
+                    "A named tunnel with this name already exists in Cloudflare, but the local credentials file is missing.\n\n" +
+                    "Tunnel name: " + normalizedName + "\n" +
+                    "Tunnel ID: " + tunnelId + "\n" +
+                    "Expected credentials file: " + credentialsFile + "\n\n" +
+                    "This usually means the tunnel was created earlier on another machine or under a different Windows profile, " +
+                    "or the local credentials file was deleted.\n\n" +
+                    "Please recreate the named tunnel from this machine.");
+            }
+        }
+        else
         {
             log("Creating named Cloudflare tunnel: " + normalizedName);
+
             var create = await RunProcessCaptureAsync(
                 cloudflaredPath,
                 new[] { "tunnel", "create", normalizedName },
@@ -84,12 +114,27 @@ public static class CloudflareNamedTunnelService
                     "\n\nSTDERR:\n" + create.Stderr);
             }
 
-            tunnelId = await GetTunnelIdByNameAsync(cloudflaredPath, workingDirectory, normalizedName, cancellationToken);
+            tunnelId = await GetTunnelIdByNameAsync(
+                cloudflaredPath,
+                workingDirectory,
+                normalizedName,
+                cancellationToken);
+
             if (string.IsNullOrWhiteSpace(tunnelId))
                 throw new InvalidOperationException("Tunnel was created but its ID could not be resolved.");
+
+            credentialsFile = GetCredentialsFilePath(tunnelId);
+
+            if (!File.Exists(credentialsFile))
+            {
+                throw new InvalidOperationException(
+                    "Tunnel was created, but the credentials file was not found.\n\n" +
+                    "Expected file: " + credentialsFile);
+            }
         }
 
         log("Ensuring Cloudflare DNS route: " + normalizedHostname);
+
         var route = await RunProcessCaptureAsync(
             cloudflaredPath,
             new[] { "tunnel", "route", "dns", "--overwrite-dns", normalizedName, normalizedHostname },
@@ -103,14 +148,11 @@ public static class CloudflareNamedTunnelService
                 "\n\nSTDERR:\n" + route.Stderr);
         }
 
-        var credentialsFile = Path.Combine(Path.GetDirectoryName(GetOriginCertificatePath())!, tunnelId + ".json");
-        if (!File.Exists(credentialsFile))
-            throw new InvalidOperationException("Tunnel credentials file was not found: " + credentialsFile);
+        var configPath = WriteConfigFile(rootFolder, tunnelId!, normalizedHostname, localUrl, credentialsFile!);
 
-        var configPath = WriteConfigFile(rootFolder, tunnelId, normalizedHostname, localUrl, credentialsFile);
         return new CloudflareNamedTunnelPreparation
         {
-            TunnelId = tunnelId,
+            TunnelId = tunnelId!,
             TunnelName = normalizedName,
             Hostname = normalizedHostname,
             ConfigPath = configPath,

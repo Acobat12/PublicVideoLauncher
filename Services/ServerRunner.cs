@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -34,6 +35,14 @@ public sealed class ServerRunner
     private CancellationTokenSource? _liveLogCts;
     private Task? _caddyLiveLogTask;
     private Task? _tunnelLiveLogTask;
+    private Task? _caddyWatchdogTask;
+    private string? _caddyPath;
+    private string? _caddyWorkingDirectory;
+    private string? _caddyHealthUrl;
+    private string? _lastWorkspaceRoot;
+    private int? _lastTranslationCallbackPort;
+    private readonly ProcessCleanupService _processCleanupService = new();
+    private readonly SemaphoreSlim _caddyRestartGate = new(1, 1);
 
     public bool IsRunning =>
         (_caddyProcess is { HasExited: false }) ||
@@ -55,6 +64,16 @@ public sealed class ServerRunner
         if (workspace.RootFolder is null)
             throw new InvalidOperationException("Workspace root is not set.");
 
+        _lastWorkspaceRoot = workspace.RootFolder;
+        _lastTranslationCallbackPort = translationCallbackPort;
+
+        log("Cleaning up stale tunnel processes before start...");
+        await _processCleanupService.CleanupAsync(
+            workspace.RootFolder,
+            ProcessCleanupService.BuildDefaultManagedPorts(translationCallbackPort),
+            log,
+            cancellationToken);
+
         var provider = NormalizeTunnelProvider(tunnelProvider);
         _activeTunnelProvider = provider;
         var port = PortHelper.GetFreeTcpPort(requestedPort);
@@ -67,33 +86,15 @@ public sealed class ServerRunner
         _caddyStdoutFile = Path.GetTempFileName();
         _caddyStderrFile = Path.GetTempFileName();
         _caddyConfigFile = Path.GetTempFileName();
+        _caddyPath = tools.CaddyPath;
+        _caddyWorkingDirectory = workspace.RootFolder;
+        _caddyHealthUrl = localPlaylistUrl;
 
         File.WriteAllText(_caddyConfigFile, BuildCaddyConfig(workspace.RootFolder, port, translationCallbackPort));
 
-        log("Launching Caddy...");
-        _caddyProcess = StartProcess(
-            tools.CaddyPath,
-            new[]
-            {
-                "run",
-                "--config", _caddyConfigFile,
-                "--adapter", "caddyfile"
-            },
-            workspace.RootFolder,
-            _caddyStdoutFile,
-            _caddyStderrFile);
-
         _liveLogCts?.Cancel();
         _liveLogCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        _caddyLiveLogTask = PumpLogsAsync(_caddyProcess, _caddyStdoutFile, _caddyStderrFile, log, "caddy", _liveLogCts.Token);
-
-        await WaitForLocalEndpointAsync(
-            _caddyProcess,
-            localPlaylistUrl,
-            _caddyStdoutFile,
-            _caddyStderrFile,
-            log,
-            cancellationToken);
+        await StartOrRestartCaddyAsync(log, cancellationToken, initialStart: true);
 
         _tunnelStdoutFile = Path.GetTempFileName();
         _tunnelStderrFile = Path.GetTempFileName();
@@ -110,10 +111,12 @@ public sealed class ServerRunner
         var targetUrl = publicBaseUrl.TrimEnd('/') + "/player.html?list=/playlist.json";
         if (!string.IsNullOrWhiteSpace(initialVideoSrc))
             targetUrl += "&src=" + Uri.EscapeDataString(initialVideoSrc);
+        targetUrl += "&_ts=" + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
 
         if (port != requestedPort)
             log($"Requested port {requestedPort} is unavailable. Using port {port} instead.");
 
+        _caddyWatchdogTask = RunCaddyWatchdogAsync(log, _liveLogCts.Token);
         log("Public URL: " + targetUrl);
 
         return new LaunchSession
@@ -154,6 +157,8 @@ public sealed class ServerRunner
             await IgnoreTaskAsync(_tunnelLiveLogTask);
         if (_caddyLiveLogTask is not null)
             await IgnoreTaskAsync(_caddyLiveLogTask);
+        if (_caddyWatchdogTask is not null)
+            await IgnoreTaskAsync(_caddyWatchdogTask);
 
         // provider-specific cleanup after process stop
         if (string.Equals(provider, "tailscale-funnel", StringComparison.OrdinalIgnoreCase))
@@ -172,13 +177,29 @@ public sealed class ServerRunner
             }
         }
 
+        if (!string.IsNullOrWhiteSpace(_lastWorkspaceRoot))
+        {
+            log("Verifying stale tunnel processes after stop...");
+            await _processCleanupService.CleanupAsync(
+                _lastWorkspaceRoot,
+                ProcessCleanupService.BuildDefaultManagedPorts(_lastTranslationCallbackPort),
+                log,
+                CancellationToken.None);
+        }
+
         _tunnelProcess = null;
         _caddyProcess = null;
         _activeTunnelProvider = null;
         _tunnelLiveLogTask = null;
         _caddyLiveLogTask = null;
+        _caddyWatchdogTask = null;
         _liveLogCts?.Dispose();
         _liveLogCts = null;
+        _caddyPath = null;
+        _caddyWorkingDirectory = null;
+        _caddyHealthUrl = null;
+        _lastWorkspaceRoot = null;
+        _lastTranslationCallbackPort = null;
 
         CleanupTempFile(ref _caddyStdoutFile);
         CleanupTempFile(ref _caddyStderrFile);
@@ -199,14 +220,142 @@ public sealed class ServerRunner
             $":{port} {{",
             $"  root * \"{escapedRoot}\"",
             "  @translation path /translation-ready",
+            "  @dynamicFiles path_regexp dynamicFiles (?i).*(?:\\.html|\\.json)$",
             translationCallbackPort is int callbackPort
                 ? $"  reverse_proxy @translation 127.0.0.1:{callbackPort}"
                 : "  respond @translation 503",
+            "  header @dynamicFiles Cache-Control \"no-store, max-age=0, must-revalidate\"",
+            "  header @dynamicFiles Pragma \"no-cache\"",
+            "  header @dynamicFiles Expires \"0\"",
             "  file_server",
             "}"
         };
 
         return string.Join(Environment.NewLine, lines);
+    }
+
+    private async Task StartOrRestartCaddyAsync(Action<string> log, CancellationToken cancellationToken, bool initialStart)
+    {
+        if (string.IsNullOrWhiteSpace(_caddyPath) ||
+            string.IsNullOrWhiteSpace(_caddyConfigFile) ||
+            string.IsNullOrWhiteSpace(_caddyWorkingDirectory) ||
+            string.IsNullOrWhiteSpace(_caddyStdoutFile) ||
+            string.IsNullOrWhiteSpace(_caddyStderrFile) ||
+            string.IsNullOrWhiteSpace(_caddyHealthUrl))
+        {
+            throw new InvalidOperationException("Caddy restart state is incomplete.");
+        }
+
+        if (!initialStart)
+        {
+            await StopProcessAsync(_caddyProcess, log, "caddy");
+            if (_caddyLiveLogTask is not null)
+                await IgnoreTaskAsync(_caddyLiveLogTask);
+
+            _caddyProcess = null;
+            _caddyLiveLogTask = null;
+        }
+
+        log(initialStart ? "Launching Caddy..." : "Restarting Caddy on the active local port...");
+        _caddyProcess = StartProcess(
+            _caddyPath,
+            new[]
+            {
+                "run",
+                "--config", _caddyConfigFile,
+                "--adapter", "caddyfile"
+            },
+            _caddyWorkingDirectory,
+            _caddyStdoutFile,
+            _caddyStderrFile);
+
+        _caddyLiveLogTask = PumpLogsAsync(_caddyProcess, _caddyStdoutFile, _caddyStderrFile, log, "caddy", _liveLogCts?.Token ?? cancellationToken);
+
+        await WaitForLocalEndpointAsync(
+            _caddyProcess,
+            _caddyHealthUrl,
+            _caddyStdoutFile,
+            _caddyStderrFile,
+            log,
+            cancellationToken);
+    }
+
+    private async Task RunCaddyWatchdogAsync(Action<string> log, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(_caddyHealthUrl))
+            return;
+
+        using var http = CreateHttpClient();
+        var consecutiveProbeFailures = 0;
+
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
+
+            var process = _caddyProcess;
+            if (process is null)
+                continue;
+
+            if (process.HasExited)
+            {
+                consecutiveProbeFailures = 0;
+                await RecoverCaddyAsync("process exited", log, cancellationToken);
+                continue;
+            }
+
+            var isHealthy = await TryProbeEndpointAsync(http, _caddyHealthUrl, cancellationToken);
+            if (isHealthy)
+            {
+                consecutiveProbeFailures = 0;
+                continue;
+            }
+
+            consecutiveProbeFailures++;
+            if (consecutiveProbeFailures < 3)
+                continue;
+
+            consecutiveProbeFailures = 0;
+            await RecoverCaddyAsync("local readiness probe failed 3 times", log, cancellationToken);
+        }
+    }
+
+    private async Task RecoverCaddyAsync(string reason, Action<string> log, CancellationToken cancellationToken)
+    {
+        await _caddyRestartGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (string.IsNullOrWhiteSpace(_caddyHealthUrl))
+                return;
+
+            using var http = CreateHttpClient();
+            if (_caddyProcess is { HasExited: false } &&
+                await TryProbeEndpointAsync(http, _caddyHealthUrl, cancellationToken))
+            {
+                return;
+            }
+
+            log($"Caddy became unhealthy ({reason}). Restarting it on the current local port...");
+            await StartOrRestartCaddyAsync(log, cancellationToken, initialStart: false);
+            log("Caddy watchdog restored the local HTTP server.");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            log("Caddy watchdog restart failed: " + ex.Message);
+        }
+        finally
+        {
+            _caddyRestartGate.Release();
+        }
     }
 
     private async Task<string> StartTunnelAsync(
@@ -437,28 +586,12 @@ public sealed class ServerRunner
 
                 log("Launching xTunnel...");
                 var xTunnelPort = new Uri(localUrl).Port;
-                _tunnelProcess = StartProcess(
+                return await StartXTunnelWithFallbackAsync(
                     xTunnelPath,
-                    BuildXTunnelArgs(xTunnelPort, force: true),
+                    xTunnelPort,
                     workingDirectory,
-                    _tunnelStdoutFile!,
-                    _tunnelStderrFile!,
-                    redirectStandardInput: false);
-                _tunnelLiveLogTask = PumpLogsAsync(_tunnelProcess, _tunnelStdoutFile!, _tunnelStderrFile!, log, "xtunnel", _liveLogCts?.Token ?? cancellationToken);
-                await WaitForXTunnelConnectedAsync(
-                    _tunnelProcess,
-                    _tunnelStdoutFile!,
-                    _tunnelStderrFile!,
                     log,
                     cancellationToken);
-
-                return await WaitForPublicUrlAsync(
-                    _tunnelProcess,
-                    _tunnelStdoutFile!,
-                    _tunnelStderrFile!,
-                    "xTunnel",
-                    cancellationToken,
-                    hostHint: null);
             }
 
             case "vk-tunnel":
@@ -602,11 +735,98 @@ public sealed class ServerRunner
         }
     }
 
-    private static string[] BuildXTunnelArgs(int port, bool force)
+    private async Task<string> StartXTunnelWithFallbackAsync(
+        string xTunnelPath,
+        int port,
+        string workingDirectory,
+        Action<string> log,
+        CancellationToken cancellationToken)
     {
+        var attempts = new (string[] Args, string Label)[]
+        {
+            (BuildXTunnelArgs(port, force: true, headless: true), "headless mode"),
+            (BuildXTunnelArgs(port, force: true, headless: false), "console-compatible mode")
+        };
+
+        Exception? lastError = null;
+
+        foreach (var attempt in attempts)
+        {
+            ResetTempFile(_tunnelStdoutFile!);
+            ResetTempFile(_tunnelStderrFile!);
+
+            _tunnelProcess = StartProcess(
+                xTunnelPath,
+                attempt.Args,
+                workingDirectory,
+                _tunnelStdoutFile!,
+                _tunnelStderrFile!,
+                redirectStandardInput: false);
+
+            _tunnelLiveLogTask = PumpLogsAsync(
+                _tunnelProcess,
+                _tunnelStdoutFile!,
+                _tunnelStderrFile!,
+                log,
+                "xtunnel",
+                _liveLogCts?.Token ?? cancellationToken);
+
+            try
+            {
+                await WaitForXTunnelConnectedAsync(
+                    _tunnelProcess,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    log,
+                    cancellationToken);
+
+                return await WaitForPublicUrlAsync(
+                    _tunnelProcess,
+                    _tunnelStdoutFile!,
+                    _tunnelStderrFile!,
+                    "xTunnel",
+                    cancellationToken,
+                    hostHint: null);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                log($"xTunnel start failed in {attempt.Label}: {ex.Message}");
+                await StopProcessAsync(_tunnelProcess, log, "xtunnel");
+                if (_tunnelLiveLogTask is not null)
+                    await IgnoreTaskAsync(_tunnelLiveLogTask);
+
+                _tunnelProcess = null;
+                _tunnelLiveLogTask = null;
+            }
+        }
+
+        throw lastError ?? new InvalidOperationException("xTunnel failed to start.");
+    }
+
+    private static string[] BuildXTunnelArgs(int port, bool force, bool headless)
+    {
+        if (headless)
+        {
+            return force
+                ? new[] { "http", port.ToString(), "--monitor", "false", "--force" }
+                : new[] { "http", port.ToString(), "--monitor", "false" };
+        }
+
         return force
-        ? new[] { "http", port.ToString(), "--monitor", "false", "--log-format", "json", "--force" }
-        : new[] { "http", port.ToString(), "--monitor", "false", "--log-format", "json" };
+            ? new[] { "http", port.ToString(), "--force" }
+            : new[] { "http", port.ToString() };
+    }
+
+    private static void ResetTempFile(string path)
+    {
+        try
+        {
+            File.WriteAllText(path, string.Empty);
+        }
+        catch
+        {
+        }
     }
 
     private static (string FileName, string[] Arguments) BuildVkTunnelCommand(string configuredPath, int port)
@@ -1801,6 +2021,19 @@ public sealed class ServerRunner
             $"Probe URL: {probeUrl}\n" +
             $"Last HTTP error: {lastError?.Message ?? "(none)"}\n\n" +
             "STDERR:\n" + ReadFileSafe(stderrPath));
+    }
+
+    private static async Task<bool> TryProbeEndpointAsync(HttpClient http, string url, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await http.GetAsync(url, cancellationToken);
+            return response.IsSuccessStatusCode;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     private static HttpClient CreateHttpClient()

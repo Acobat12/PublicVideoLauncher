@@ -39,6 +39,12 @@
     <Style Selector="CheckBox">
       <Setter Property="Foreground" Value="#E2E8F0"/>
     </Style>
+
+    <Style Selector="CheckBox.success">
+      <Setter Property="Foreground" Value="#86EFAC"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+    </Style>
+
     <Style Selector="ComboBox">
       <Setter Property="Foreground" Value="#F8FAFC"/>
       <Setter Property="Background" Value="#0F172A"/>
@@ -88,6 +94,23 @@
     <Style Selector="Button.warn:pointerover">
       <Setter Property="Background" Value="#F59E0B"/>
     </Style>
+
+    <Style Selector="Button.info">
+      <Setter Property="Background" Value="#2563EB"/>
+      <Setter Property="BorderBrush" Value="#3B82F6"/>
+    </Style>
+
+    <Style Selector="Button.info:pointerover">
+      <Setter Property="Background" Value="#3B82F6"/>
+    </Style>
+
+    <Style Selector="ProgressBar.mainBusy">
+      <Setter Property="Height" Value="8"/>
+      <Setter Property="MinWidth" Value="220"/>
+      <Setter Property="IsIndeterminate" Value="True"/>
+      <Setter Property="Foreground" Value="#22C55E"/>
+      <Setter Property="Background" Value="#172338"/>
+    </Style>
   </Window.Styles>
 
   <Grid RowDefinitions="Auto,*,220,Auto" Margin="10" RowSpacing="10">
@@ -98,87 +121,92 @@
             BorderThickness="1"
             BorderBrush="#24324B"
             Background="#0B1220">
-      <Grid ColumnDefinitions="Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
-            RowDefinitions="Auto,Auto,Auto"
-            ColumnSpacing="10"
+      <Grid RowDefinitions="Auto,Auto,Auto,Auto"
             RowSpacing="10">
 
-        <TextBlock Grid.Row="0" Grid.Column="0" Text="Folder" FontWeight="Bold" VerticalAlignment="Center"/>
+        <Grid Grid.Row="0"
+              ColumnDefinitions="Auto,*,Auto"
+              ColumnSpacing="10">
+          <TextBlock Grid.Column="0" Text="Folder" FontWeight="Bold" VerticalAlignment="Center"/>
+          <TextBox x:Name="FolderTextBox"
+                   Grid.Column="1"
+                   IsReadOnly="True"
+                   Watermark="Choose a folder with videos..."/>
+          <Button x:Name="BrowseButton" Grid.Column="2" Content="Browse"/>
+        </Grid>
 
-        <TextBox x:Name="FolderTextBox"
-                 Grid.Row="0"
-                 Grid.Column="1"
-                 IsReadOnly="True"
-                 Watermark="Choose a folder with videos..."/>
+        <WrapPanel Grid.Row="1" Orientation="Horizontal">
+          <TextBlock Text="Port" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,8"/>
+          <NumericUpDown x:Name="PortNumeric"
+                         Width="140"
+                         Minimum="1024"
+                         Maximum="65535"
+                         Value="8000"
+                         FormatString="0"
+                         Margin="0,0,16,8"/>
 
-        <Button x:Name="BrowseButton" Grid.Row="0" Grid.Column="2" Content="Browse..."/>
+          <TextBlock Text="Tunnel" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,8"/>
+          <ComboBox x:Name="TunnelProviderComboBox"
+                    Width="230"
+                    SelectedIndex="0"
+                    VerticalAlignment="Center"
+                    Margin="0,0,16,8"/>
 
-        <TextBlock Grid.Row="0" Grid.Column="3" Text="Port" FontWeight="Bold" VerticalAlignment="Center"/>
+          <CheckBox x:Name="ProxyModeCheckBox"
+                    IsChecked="True"
+                    VerticalAlignment="Center"
+                    Content="Convert to MP4"
+                    Margin="0,0,16,8"/>
 
-        <NumericUpDown x:Name="PortNumeric"
-                       Grid.Row="0"
-                       Grid.Column="4"
-                       Width="140"
-                       Minimum="1024"
-                       Maximum="65535"
-                       Value="8000"
-                       FormatString="0"/>
+          <CheckBox x:Name="AutostartBrowserCheckBox"
+                    IsChecked="True"
+                    VerticalAlignment="Center"
+                    Content="Open browser after start"
+                    Margin="0,0,16,8"/>
 
-        <TextBlock Grid.Row="0" Grid.Column="5" Text="Tunnel" FontWeight="Bold" VerticalAlignment="Center"/>
+          <Button x:Name="ScanButton" Classes="primary" Content="Scan Folder" Margin="0,0,0,8"/>
+        </WrapPanel>
 
-        <ComboBox x:Name="TunnelProviderComboBox"
-                  Grid.Row="0"
-                  Grid.Column="6"
-                  SelectedIndex="0"
-                  VerticalAlignment="Center"/>
+        <Grid Grid.Row="2"
+              ColumnDefinitions="Auto,*,Auto"
+              ColumnSpacing="10">
+          <TextBlock Grid.Column="0" Text="Public URL" FontWeight="Bold" VerticalAlignment="Center"/>
+          <TextBox x:Name="PublicUrlTextBox"
+                    Grid.Column="1"
+                    IsReadOnly="True"
+                    Watermark="Public URL will appear here after start..."/>
+          <Button x:Name="CopyUrlButton"
+                  Grid.Column="2"
+                  Classes="info"
+                  Content="Copy"
+                  IsEnabled="False"/>
+        </Grid>
 
-        <CheckBox x:Name="ProxyModeCheckBox"
-                  Grid.Row="0"
-                  Grid.Column="7"
-                  IsChecked="True"
-                  VerticalAlignment="Center"
-                  Content="Proxy MP4 for translation"/>
+        <Grid Grid.Row="3"
+              ColumnDefinitions="Auto,*,Auto,Auto"
+              ColumnSpacing="10">
+          <TextBlock Grid.Column="0" Text="Tunnel auth" FontWeight="Bold" VerticalAlignment="Center"/>
+          <TextBox x:Name="TunnelAuthTextBox"
+                   Grid.Column="1"
+                   Watermark="zrok: account token. xTunnel: license key. Optional for Cloudflare / LocalTunnel / VK."/>
 
-        <CheckBox x:Name="AutostartBrowserCheckBox"
-                  Grid.Row="0"
-                  Grid.Column="8"
-                  IsChecked="True"
-                  VerticalAlignment="Center"
-                  Content="Open browser after start"/>
+          <TextBox x:Name="TunnelCliPathTextBox"
+                   Grid.Column="1"
+                   IsVisible="False"
+                   Watermark="Optional path to zrok / lt / xTunnel.exe / vk-tunnel.cmd / npx"/>
 
-        <Button x:Name="ScanButton" Grid.Row="0" Grid.Column="9" Classes="primary" Content="Scan"/>
+          <CheckBox x:Name="MergeTranslationCheckBox"
+                    Classes="success"
+                    Grid.Column="2"
+                    VerticalAlignment="Center"
+                    Margin="0,0,8,0"
+                    Content="Auto merge translated audio and save output"/>
 
-        <TextBlock Grid.Row="1" Grid.Column="0" Text="Public URL" FontWeight="Bold" VerticalAlignment="Center"/>
-
-        <TextBox x:Name="PublicUrlTextBox"
-                 Grid.Row="1"
-                 Grid.Column="1"
-                 Grid.ColumnSpan="9"
-                 IsReadOnly="True"
-                 Watermark="Public URL will appear here after start..."/>
-
-        <TextBlock Grid.Row="2" Grid.Column="0" Text="Tunnel auth" FontWeight="Bold" VerticalAlignment="Center"/>
-
-        <TextBox x:Name="TunnelAuthTextBox"
-                 Grid.Row="2"
-                 Grid.Column="1"
-                 Grid.ColumnSpan="4"
-                 Watermark="zrok: account token. xTunnel: license key. Optional for Cloudflare / LocalTunnel / VK."/>
-
-        <TextBlock Grid.Row="2" Grid.Column="5" Text="CLI path" FontWeight="Bold" VerticalAlignment="Center"/>
-
-        <TextBox x:Name="TunnelCliPathTextBox"
-                 Grid.Row="2"
-                 Grid.Column="6"
-                 Grid.ColumnSpan="3"
-                 Watermark="Optional path to zrok / lt / xTunnel.exe / vk-tunnel.cmd / npx"/>
-
-        <Button x:Name="TunnelSetupButton"
-                Grid.Row="2"
-                Grid.Column="9"
-                Content="Setup..."
-                IsVisible="False"/>
-
+          <Button x:Name="TunnelSetupButton"
+                  Grid.Column="3"
+                  Content="Setup..."
+                  IsVisible="False"/>
+        </Grid>
       </Grid>
     </Border>
 
@@ -268,22 +296,27 @@
             BorderBrush="#24324B"
             Background="#0B1220">
       <Grid ColumnDefinitions="*,Auto" ColumnSpacing="12">
-        <StackPanel Grid.Column="0" Spacing="4">
+        <StackPanel Grid.Column="0" Spacing="6">
           <TextBlock x:Name="StatusTextBlock" Text="Idle" FontWeight="Bold" FontSize="15"/>
           <TextBlock x:Name="SummaryTextBlock" Text="Ready." Foreground="#93C5FD"/>
+          <StackPanel Orientation="Vertical" Spacing="4">
+            <TextBlock x:Name="BusyTextBlock" Text="" Foreground="#86EFAC" IsVisible="False"/>
+            <ProgressBar x:Name="BusyProgressBar" Classes="mainBusy" IsVisible="False"/>
+          </StackPanel>
         </StackPanel>
 
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" HorizontalAlignment="Right" VerticalAlignment="Center">
-          <CheckBox x:Name="MergeTranslationCheckBox"
-                    VerticalAlignment="Center"
-                    Content="Auto merge translated audio and save output"/>
-          <Button x:Name="StartButton" Classes="primary" Content="Start"/>
-          <Button x:Name="StopButton" Classes="danger" Content="Stop" IsEnabled="False"/>
-          <Button x:Name="CopyUrlButton" Content="Copy URL" IsEnabled="False"/>
-          <Button x:Name="OpenUrlButton" Content="Open" IsEnabled="False"/>
-          <Button x:Name="DependenciesButton" Content="Dependencies"/>
-          <Button x:Name="FixDnsButton" Classes="warn" Content="Fix DNS"/>
-        </StackPanel>
+        <WrapPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+          <ComboBox x:Name="LanguageComboBox"
+                    Width="130"
+                    MinWidth="130"
+                    Margin="0,0,8,8"/>
+          <Button x:Name="StartButton" Classes="primary" Content="Start" Margin="0,0,8,8"/>
+          <Button x:Name="StopButton" Classes="danger" Content="Stop" IsEnabled="False" Margin="0,0,8,8"/>
+          <Button x:Name="OpenUrlButton" Content="Open" IsEnabled="False" Margin="0,0,8,8"/>
+          <Button x:Name="TranslationStudioButton" Classes="info" Content="Translation" Margin="0,0,8,8"/>
+          <Button x:Name="DependenciesButton" Content="Tools" Margin="0,0,8,8"/>
+          <Button x:Name="FixDnsButton" Classes="warn" Content="DNS" Margin="0,0,0,8"/>
+        </WrapPanel>
       </Grid>
     </Border>
   </Grid>

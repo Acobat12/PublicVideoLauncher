@@ -6,6 +6,7 @@ using PublicVideoLauncher.Services;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -38,6 +39,7 @@ public partial class ToolSetupWindow : Window
     private readonly Button _installButton;
     private readonly Button _closeButton;
     private readonly Dictionary<string, ToolUi> _toolUi;
+    private readonly AppLanguage _language;
     private CancellationTokenSource? _installCts;
     private string? _activeToolName;
 
@@ -46,10 +48,11 @@ public partial class ToolSetupWindow : Window
     {
     }
 
-    public ToolSetupWindow(string rootFolder, string? startupError = null, Action<string>? log = null)
+    public ToolSetupWindow(string rootFolder, string? startupError = null, Action<string>? log = null, AppLanguage language = AppLanguage.English)
     {
         _rootFolder = rootFolder;
         _log = log;
+        _language = language;
 
         InitializeComponent();
 
@@ -201,10 +204,10 @@ public partial class ToolSetupWindow : Window
             pair.Value.OpenButton.Click += (_, _) => OpenExternal(pair.Value.DownloadUrl);
             pair.Value.ProgressBar.Value = 0;
             pair.Value.ProgressBar.IsIndeterminate = false;
-            pair.Value.ProgressTextBlock.Text = "Waiting";
+            pair.Value.ProgressTextBlock.Text = T("Waiting");
         }
 
-        _folderTextBlock.Text = "Project folder: " + rootFolder;
+        _folderTextBlock.Text = T("Project folder:") + " " + rootFolder;
         _errorTextBox.Text = startupError ?? string.Empty;
 
         _refreshButton.Click += RefreshButton_OnClick;
@@ -217,6 +220,8 @@ public partial class ToolSetupWindow : Window
         _refreshTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
         _refreshTimer.Tick += async (_, _) => await RefreshAsync();
         _refreshTimer.Start();
+
+        UiLocalizer.Apply(this, _language);
     }
 
     private void ToolSetupWindow_Closing(object? sender, WindowClosingEventArgs e)
@@ -239,7 +244,7 @@ public partial class ToolSetupWindow : Window
                 .Where(x => !x.IsInstalled && x.SupportsAutomaticInstall)
                 .Select(x => x.Name)
                 .ToArray(),
-            "Installing all missing tools...");
+            T("Installing all missing tools..."));
     }
 
     private async Task InstallSingleToolAsync(string toolName)
@@ -250,24 +255,24 @@ public partial class ToolSetupWindow : Window
         var status = ToolResolver.InspectAll(_rootFolder).Single(x => x.Name == toolName);
         if (status.IsInstalled)
         {
-            _summaryTextBlock.Text = status.DisplayName + " is already installed.";
+            _summaryTextBlock.Text = string.Format(T("{0} is already installed."), status.DisplayName);
             return;
         }
 
         if (!status.SupportsAutomaticInstall)
         {
-            _summaryTextBlock.Text = status.DisplayName + " must be installed manually on this platform. Open the download page and the window will detect it automatically.";
+            _summaryTextBlock.Text = string.Format(T("{0} must be installed manually on this platform. Open the download page and the window will detect it automatically."), status.DisplayName);
             return;
         }
 
-        await RunAutomaticInstallAsync(new[] { toolName }, "Installing " + status.DisplayName + "...");
+        await RunAutomaticInstallAsync(new[] { toolName }, string.Format(T("Installing {0}..."), status.DisplayName));
     }
 
     private async Task RunAutomaticInstallAsync(IReadOnlyList<string> toolNames, string startText)
     {
         if (toolNames.Count == 0)
         {
-            _summaryTextBlock.Text = "No supported automatic installs are needed.";
+            _summaryTextBlock.Text = T("No supported automatic installs are needed.");
             return;
         }
 
@@ -289,16 +294,16 @@ public partial class ToolSetupWindow : Window
             }
 
             _errorTextBox.Text = string.Empty;
-            _summaryTextBlock.Text = "Installation finished. Refreshing tool status...";
+            _summaryTextBlock.Text = T("Installation finished. Refreshing tool status...");
         }
         catch (OperationCanceledException)
         {
-            _summaryTextBlock.Text = "Installation canceled.";
+            _summaryTextBlock.Text = T("Installation canceled.");
         }
         catch (Exception ex)
         {
             _errorTextBox.Text = ex.Message;
-            _summaryTextBlock.Text = "Installation stopped. Check the error and install the missing tool manually if needed.";
+            _summaryTextBlock.Text = T("Installation stopped. Check the error and install the missing tool manually if needed.");
             AppendLog("Dependency setup failed: " + ex.Message);
         }
         finally
@@ -336,12 +341,12 @@ public partial class ToolSetupWindow : Window
         {
             if (missing.Length == 0)
             {
-                _summaryTextBlock.Text = "All helper tools are installed. The program can be started again.";
+                _summaryTextBlock.Text = T("All helper tools are installed. The program can be started again.");
             }
             else
             {
                 var names = string.Join(", ", missing.Select(x => x.DisplayName));
-                _summaryTextBlock.Text = $"Missing tools detected: {names}. Install the tools required for the tunnel provider you plan to use.";
+                _summaryTextBlock.Text = string.Format(T("Missing tools detected: {0}. Install the tools required for the tunnel provider you plan to use."), names);
             }
         }
 
@@ -351,16 +356,16 @@ public partial class ToolSetupWindow : Window
 
     private void ApplyStatus(ToolStatus status, ToolUi ui)
     {
-        ui.StatusTextBlock.Text = status.IsInstalled ? "Installed" : "Missing";
+        ui.StatusTextBlock.Text = T(status.IsInstalled ? "Installed" : "Missing");
         ui.StatusTextBlock.Classes.Set("ok", status.IsInstalled);
         ui.StatusTextBlock.Classes.Set("warn", !status.IsInstalled);
         ui.PathTextBox.Text = status.DetectedPath ?? string.Empty;
-        ui.HintTextBox.Text = status.InstallationHint;
+        ui.HintTextBox.Text = LocalizeInstallationHint(status);
         ui.AutoTextBlock.Text = status.SupportsAutomaticInstall
-            ? "Automatic install is supported by the app for this tool on the current OS."
-            : "Automatic install is not available here. Install it manually and this window will detect it.";
+            ? T("Automatic install is supported by the app for this tool on the current OS.")
+            : T("Automatic install is not available here. Install it manually and this window will detect it.");
 
-        ui.InstallButton.Content = status.SupportsAutomaticInstall ? "Install automatically" : "Manual install only";
+        ui.InstallButton.Content = T(status.SupportsAutomaticInstall ? "Install automatically" : "Manual install only");
         ui.InstallButton.IsEnabled = _installCts is null && !status.IsInstalled && status.SupportsAutomaticInstall;
 
         if (!string.Equals(_activeToolName, status.Name, StringComparison.OrdinalIgnoreCase))
@@ -368,10 +373,10 @@ public partial class ToolSetupWindow : Window
             ui.ProgressBar.IsIndeterminate = false;
             ui.ProgressBar.Value = status.IsInstalled ? 100 : 0;
             ui.ProgressTextBlock.Text = status.IsInstalled
-                ? "Installed and ready."
+                ? T("Installed and ready.")
                 : status.SupportsAutomaticInstall
-                    ? "Waiting for install."
-                    : "Manual install required on this platform.";
+                    ? T("Waiting for install.")
+                    : T("Manual install required on this platform.");
         }
     }
 
@@ -388,7 +393,7 @@ public partial class ToolSetupWindow : Window
             {
                 ui.ProgressBar.IsIndeterminate = false;
                 ui.ProgressBar.Value = Math.Clamp(percent, 0, 100);
-                ui.ProgressTextBlock.Text = $"{progress.Stage} ({percent:0.0}%)";
+                ui.ProgressTextBlock.Text = $"{T(progress.Stage)} ({percent:0.0}%)";
             }
             else
             {
@@ -399,7 +404,7 @@ public partial class ToolSetupWindow : Window
                                        progress.Stage.StartsWith("Already installed", StringComparison.OrdinalIgnoreCase)
                     ? 100
                     : ui.ProgressBar.Value;
-                ui.ProgressTextBlock.Text = progress.Stage;
+                ui.ProgressTextBlock.Text = T(progress.Stage);
             }
 
             if (progress.Stage.StartsWith("Failed:", StringComparison.OrdinalIgnoreCase))
@@ -411,6 +416,49 @@ public partial class ToolSetupWindow : Window
     }
 
     private void AppendLog(string message) => _log?.Invoke(message);
+
+    private string T(string text) => UiLocalizer.Translate(text, _language);
+
+    private string LocalizeInstallationHint(ToolStatus status)
+    {
+        if (_language != AppLanguage.Russian)
+            return status.InstallationHint;
+
+        return status.Name switch
+        {
+            "ffmpeg" => OperatingSystem.IsWindows()
+                ? $"Windows: программа скачает portable-архив ffmpeg, извлечёт ffmpeg.exe и ffprobe.exe в .tools\\ffmpeg и покажет прогресс в окне «Зависимости». Если нужно вручную: скопируйте ffmpeg.exe и ffprobe.exe сюда: {PortableToolPath("ffmpeg", "ffmpeg")}"
+                : $"Linux/macOS: автоматическая установка ffmpeg здесь не встроена. Установите ffmpeg через пакетный менеджер или поместите бинарник сюда: {PortableToolPath("ffmpeg", "ffmpeg")}. Примеры: sudo apt install ffmpeg, sudo dnf install ffmpeg, brew install ffmpeg. Окно обновится автоматически, когда ffmpeg появится.",
+            "caddy" =>
+                $"Программа скачает актуальную сборку Caddy для этой ОС, покажет прогресс загрузки и извлечёт бинарник сюда: {PortableToolPath("caddy", "caddy")}. Если нужно вручную: установите Caddy в систему или скопируйте бинарник в эту папку.",
+            "cloudflared" =>
+                $"Программа скачает актуальную сборку cloudflared для этой ОС, покажет прогресс загрузки и сохранит бинарник сюда: {PortableToolPath("cloudflared", "cloudflared")}. Если нужно вручную: установите cloudflared в систему или скопируйте бинарник в эту папку.",
+            "ngrok" =>
+                $"Установите ngrok с официальной страницы загрузки. Поместите ngrok / ngrok.exe сюда: {PortableToolPath("ngrok", "ngrok")}. При первом запуске вставьте authtoken ngrok в поле Tunnel auth; программа выполнит настройку перед стартом туннеля. Если ngrok уже настроен на этой машине, Tunnel auth можно оставить пустым.",
+            "ssh" =>
+                "localhost.run использует обычный OpenSSH client. В современных Windows ssh.exe часто уже установлен. Если его нет, установите компонент OpenSSH Client или укажите путь к ssh.exe. На Linux/macOS обычно достаточно системного ssh.",
+            "tailscale" =>
+                "Установите клиент Tailscale и войдите в аккаунт на этой машине. Funnel должен быть разрешён в настройках Tailscale. Программа запустит Funnel с локальным Caddy как backend и дождётся публичной ссылки ts.net.",
+            "zrok" =>
+                $"Установите zrok с официальной документации или GitHub releases. Поместите zrok / zrok.exe сюда: {PortableToolPath("zrok", "zrok")}. Для первого запуска нужен account token zrok: вставьте его в Tunnel auth, и программа выполнит zrok enable перед созданием публичной ссылки. Если машина уже включена в zrok, Tunnel auth можно оставить пустым.",
+            "localtunnel" =>
+                "Установите LocalTunnel глобально через Node.js: npm install -g localtunnel. Также можно указать путь к lt / localtunnel / npx. У внешних пользователей может появиться пароль или consent-страница LocalTunnel; это поведение сервиса, не приложения.",
+            "xtunnel" =>
+                $"Установите xTunnel вручную с официального сайта. Поместите xtunnel / xTunnel.exe сюда: {PortableToolPath("xtunnel", OperatingSystem.IsWindows() ? "xTunnel" : "xtunnel")}. Если для xTunnel нужны аккаунт, лицензия или активация, вставьте ключ в Tunnel auth.",
+            "vk-tunnel" =>
+                "Установите Node.js, затем VK Tunnel глобально: npm install -g @vkontakte/vk-tunnel. Также можно указать путь к vk-tunnel.cmd / vk-tunnel.js / npx. При первом запуске VK Tunnel может открыть страницу авторизации VK в браузере.",
+            _ => UiLocalizer.Translate(status.InstallationHint, _language)
+        };
+    }
+
+    private string PortableToolPath(string toolName, string executableBaseName)
+    {
+        var fileName = OperatingSystem.IsWindows()
+            ? executableBaseName + ".exe"
+            : executableBaseName;
+
+        return Path.Combine(_rootFolder, ".tools", toolName, fileName);
+    }
 
     private static void OpenExternal(string url)
     {

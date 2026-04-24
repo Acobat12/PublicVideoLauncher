@@ -33,8 +33,8 @@ public sealed class VideoWorkspaceTests
 
             var entry = Assert.Single(workspace.Entries);
             Assert.Equal("/Clip%201.mkv", entry.OriginalUrl);
-            Assert.Equal("/.public-video-cache/clip-1.play.mp4", entry.PlaybackUrl);
-            Assert.Equal("/.public-video-cache/clip-1.proxy.mp4", entry.TranslationUrl);
+            Assert.Equal("/.public-video-cache/clip-1-mkv.play.mp4", entry.PlaybackUrl);
+            Assert.Equal("/.public-video-cache/clip-1-mkv.proxy.mp4", entry.TranslationUrl);
             Assert.Equal("Pending", entry.CacheState);
         }
         finally

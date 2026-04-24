@@ -15,10 +15,99 @@ public sealed class PlayerFilesService
 
     public async Task WriteAllAsync(string rootFolder, IReadOnlyList<VideoEntry> entries, string? translationCallbackUrl, CancellationToken cancellationToken)
     {
+        await WriteAllAsync(rootFolder, entries, translationCallbackUrl, AppLanguage.English, cancellationToken);
+    }
+
+    public async Task WriteAllAsync(
+        string rootFolder,
+        IReadOnlyList<VideoEntry> entries,
+        string? translationCallbackUrl,
+        AppLanguage language,
+        CancellationToken cancellationToken)
+    {
         await WritePlaylistAsync(rootFolder, entries, cancellationToken);
-        var playerHtml = PlayerHtml.Replace("__PVL_CALLBACK_URL__", JsonSerializer.Serialize(translationCallbackUrl ?? string.Empty));
-        await File.WriteAllTextAsync(Path.Combine(rootFolder, "player.html"), playerHtml, Utf8NoBom, cancellationToken);
+        await WritePlayerPageAsync(rootFolder, "player.html", translationCallbackUrl, "Local Video Player", language, cancellationToken);
         await File.WriteAllTextAsync(Path.Combine(rootFolder, "favicon.svg"), FaviconSvg, Utf8NoBom, cancellationToken);
+    }
+
+    public async Task WritePlayerPageAsync(
+        string rootFolder,
+        string fileName,
+        string? translationCallbackUrl,
+        string pageTitle,
+        CancellationToken cancellationToken)
+    {
+        await WritePlayerPageAsync(rootFolder, fileName, translationCallbackUrl, pageTitle, AppLanguage.English, cancellationToken);
+    }
+
+    public async Task WritePlayerPageAsync(
+        string rootFolder,
+        string fileName,
+        string? translationCallbackUrl,
+        string pageTitle,
+        AppLanguage language,
+        CancellationToken cancellationToken)
+    {
+        var playerHtml = PlayerHtml
+            .Replace("__PVL_CALLBACK_URL__", JsonSerializer.Serialize(translationCallbackUrl ?? string.Empty))
+            .Replace("__PVL_PAGE_TITLE__", T(pageTitle, language))
+            .Replace("__PVL_LANG__", language == AppLanguage.Russian ? "ru" : "en")
+            .Replace("__PVL_LABELS__", BuildPlayerLabelsJson(language))
+            .Replace("__PVL_LOCAL_VIDEO_PLAYER__", T("Local Video Player", language))
+            .Replace("__PVL_WAITING_FOR_SOURCE__", T("Waiting for source...", language))
+            .Replace("__PVL_PLAYLIST_EMPTY__", T("Playlist: --", language))
+            .Replace("__PVL_STATIC_MP4_DELIVERY__", T("STATIC MP4 DELIVERY", language))
+            .Replace("__PVL_LOADING_VIDEO__", T("Loading video", language))
+            .Replace("__PVL_PREPARING_PLAYER__", T("Preparing the player...", language))
+            .Replace("__PVL_PREVIOUS__", T("Previous", language))
+            .Replace("__PVL_NEXT__", T("Next", language))
+            .Replace("__PVL_AUTO_PLAY_NEXT__", T("Auto play next", language))
+            .Replace("__PVL_NO_PLAYLIST_LOADED__", T("No playlist loaded", language))
+            .Replace("__PVL_QUEUE__", T("Queue", language))
+            .Replace("__PVL_WAITING_FOR_PLAYLIST__", T("Waiting for playlist...", language))
+            .Replace("__PVL_UP_NEXT__", T("Up next", language))
+            .Replace("__PVL_NOTHING_QUEUED__", T("Nothing queued", language));
+        await File.WriteAllTextAsync(Path.Combine(rootFolder, fileName), playerHtml, Utf8NoBom, cancellationToken);
+    }
+
+    private static string T(string text, AppLanguage language) => UiLocalizer.Translate(text, language);
+
+    private static string BuildPlayerLabelsJson(AppLanguage language)
+    {
+        var labels = new Dictionary<string, string>
+        {
+            ["endOfPlaylist"] = T("End of playlist", language),
+            ["noNextVideo"] = T("No next video available.", language),
+            ["playlistUnavailable"] = T("playlist.json is empty or unavailable.", language),
+            ["singleVideoMode"] = T("Single video mode", language),
+            ["playlist"] = T("Playlist", language),
+            ["items"] = T("items", language),
+            ["videos"] = T("video(s)", language),
+            ["nowPlaying"] = T("Now playing", language),
+            ["playing"] = T("Playing", language),
+            ["of"] = T("of", language),
+            ["noVideoSource"] = T("No video source", language),
+            ["addSource"] = T("Add a source via ?src=/path/to/video.mp4", language),
+            ["unsupportedSource"] = T("Unsupported source", language),
+            ["expectedMp4"] = T("Expected a direct .mp4 file", language),
+            ["loadingVideo"] = T("Loading video", language),
+            ["fetchingMp4"] = T("Fetching MP4 file...", language),
+            ["readyToPlay"] = T("Ready to play", language),
+            ["autoplayBlocked"] = T("Autoplay was blocked. Press Play to continue.", language),
+            ["sec"] = T("sec", language),
+            ["buffering"] = T("Buffering", language),
+            ["pleaseWait"] = T("Please wait...", language),
+            ["playbackError"] = T("Playback error", language),
+            ["fileCouldNotLoad"] = T("The file could not be loaded.", language),
+            ["playbackAborted"] = T("Playback was aborted.", language),
+            ["networkError"] = T("A network error occurred while loading the video.", language),
+            ["decodeError"] = T("The video file is corrupted or cannot be decoded.", language),
+            ["sourceNotSupported"] = T("This video source is not supported.", language),
+            ["noVideosFound"] = T("No videos found", language),
+            ["noSupportedVideos"] = T("playlist.json is empty or no supported videos were found.", language)
+        };
+
+        return JsonSerializer.Serialize(labels);
     }
 
     private static async Task WritePlaylistAsync(string rootFolder, IReadOnlyList<VideoEntry> entries, CancellationToken cancellationToken)
@@ -50,11 +139,11 @@ public sealed class PlayerFilesService
 
     public const string PlayerHtml = """
 <!doctype html>
-<html lang="en">
+<html lang="__PVL_LANG__">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Local Video Player</title>
+  <title>__PVL_PAGE_TITLE__</title>
   <style>
     :root {
       --bg: #0b0d12;
@@ -471,14 +560,14 @@ public sealed class PlayerFilesService
         <div class="brand">
           <div class="brand-dot"></div>
           <div class="brand-copy">
-            <div class="title" id="videoTitle">Local Video Player</div>
-            <div class="subtitle" id="videoSubtitle">Waiting for source...</div>
+            <div class="title" id="videoTitle">__PVL_LOCAL_VIDEO_PLAYER__</div>
+            <div class="subtitle" id="videoSubtitle">__PVL_WAITING_FOR_SOURCE__</div>
           </div>
         </div>
 
         <div class="badges">
-          <div class="pill" id="playlistBadge">Playlist: --</div>
-          <div class="pill">STATIC MP4 DELIVERY</div>
+          <div class="pill" id="playlistBadge">__PVL_PLAYLIST_EMPTY__</div>
+          <div class="pill">__PVL_STATIC_MP4_DELIVERY__</div>
         </div>
       </div>
 
@@ -488,8 +577,8 @@ public sealed class PlayerFilesService
 
           <div class="overlay visible" id="overlay">
             <div class="overlay-card">
-              <h1 class="overlay-title" id="overlayTitle">Loading video</h1>
-              <p class="overlay-text" id="overlayText">Preparing the player...</p>
+              <h1 class="overlay-title" id="overlayTitle">__PVL_LOADING_VIDEO__</h1>
+              <p class="overlay-text" id="overlayText">__PVL_PREPARING_PLAYER__</p>
             </div>
           </div>
         </div>
@@ -497,29 +586,29 @@ public sealed class PlayerFilesService
 
       <div class="panel controls">
         <div class="controls-left">
-          <button class="btn" id="prevBtn" type="button">&larr; Previous</button>
-          <button class="btn primary" id="nextBtn" type="button">Next &rarr;</button>
+          <button class="btn" id="prevBtn" type="button">&larr; __PVL_PREVIOUS__</button>
+          <button class="btn primary" id="nextBtn" type="button">__PVL_NEXT__ &rarr;</button>
           <label class="check">
             <input type="checkbox" id="autoplayNext" checked />
-            Auto play next
+            __PVL_AUTO_PLAY_NEXT__
           </label>
         </div>
 
         <div class="controls-right">
-          <div class="meta" id="metaInfo">No playlist loaded</div>
+          <div class="meta" id="metaInfo">__PVL_NO_PLAYLIST_LOADED__</div>
         </div>
       </div>
     </section>
 
     <aside class="panel sidebar">
       <div>
-        <div class="sidebar-title">Queue</div>
-        <div class="sidebar-subtitle" id="queueSubtitle">Waiting for playlist...</div>
+        <div class="sidebar-title">__PVL_QUEUE__</div>
+        <div class="sidebar-subtitle" id="queueSubtitle">__PVL_WAITING_FOR_PLAYLIST__</div>
       </div>
 
       <div class="next-card">
-        <div class="next-label">Up next</div>
-        <div class="next-title" id="upNextTitle">Nothing queued</div>
+        <div class="next-label">__PVL_UP_NEXT__</div>
+        <div class="next-title" id="upNextTitle">__PVL_NOTHING_QUEUED__</div>
         <div class="next-empty" id="upNextMeta"></div>
       </div>
 
@@ -531,6 +620,7 @@ public sealed class PlayerFilesService
     (function installTranslationAutoDownloadHook() {
       const seenTranslationDownloads = new Set();
       const translationCallbackUrl = __PVL_CALLBACK_URL__ || "/translation-ready";
+      window.__PVL_LAST_TRANSLATED_SUBTITLES_URL = null;
       const originalConsoleLog = console.log.bind(console);
       const originalConsoleDebug = console.debug ? console.debug.bind(console) : null;
       const originalConsoleInfo = console.info ? console.info.bind(console) : null;
@@ -607,13 +697,23 @@ public sealed class PlayerFilesService
         return fileName.replace(/\.[^.]+$/i, "");
       }
 
-      function buildPayload(url) {
+      function buildPayload(url, subtitlesUrl) {
         const currentVideo = document.getElementById("video");
+        const preferredSrc =
+          window.__PVL_VOT_SRC ||
+          (currentVideo && currentVideo.dataset ? currentVideo.dataset.votSrc : "") ||
+          (currentVideo && (currentVideo.currentSrc || currentVideo.getAttribute("src"))) ||
+          "";
+
+        const baseName = sanitizeFileName(getCurrentVideoName());
+
         return {
           url,
-          videoSrc: (currentVideo && (currentVideo.currentSrc || currentVideo.getAttribute("src"))) || "",
+          videoSrc: preferredSrc,
           videoTitle: getCurrentVideoName(),
-          suggestedFileName: sanitizeFileName(getCurrentVideoName()) + ".translated.mp3"
+          suggestedFileName: baseName + ".translated.mp3",
+          subtitlesUrl: subtitlesUrl || null,
+          suggestedSubtitlesFileName: subtitlesUrl ? (baseName + ".translated.vtt") : null
         };
       }
 
@@ -653,7 +753,7 @@ public sealed class PlayerFilesService
         }
 
         try {
-          const payload = buildPayload(url);
+          const payload = buildPayload(url, window.__PVL_LAST_TRANSLATED_SUBTITLES_URL || null);
           const response = await postJson(translationCallbackUrl, payload);
           if (!response.ok) {
             throw new Error("callback status " + response.status);
@@ -766,11 +866,62 @@ public sealed class PlayerFilesService
         }
         return originalSetAttribute.call(this, name, value);
       };
+
+      window.addEventListener("beforeunload", () => {
+        try {
+          if (OriginalXMLHttpRequest && originalOpen) {
+            OriginalXMLHttpRequest.prototype.open = originalOpen;
+          }
+        } catch {}
+
+        try {
+          if (OriginalXMLHttpRequest && originalSend) {
+            OriginalXMLHttpRequest.prototype.send = originalSend;
+          }
+        } catch {}
+
+        try {
+          if (originalSetAttribute) {
+            Element.prototype.setAttribute = originalSetAttribute;
+          }
+        } catch {}
+
+        try {
+          if (originalFetch) {
+            window.fetch = originalFetch;
+          }
+        } catch {}
+
+        try {
+          if (mediaProto && mediaSrcDescriptor && mediaSrcDescriptor.set) {
+            Object.defineProperty(mediaProto, "src", mediaSrcDescriptor);
+          }
+        } catch {}
+
+        try {
+          if (originalConsoleLog) {
+            console.log = originalConsoleLog;
+          }
+        } catch {}
+
+        try {
+          if (originalConsoleDebug && console.debug) {
+            console.debug = originalConsoleDebug;
+          }
+        } catch {}
+
+        try {
+          if (originalConsoleInfo && console.info) {
+            console.info = originalConsoleInfo;
+          }
+        } catch {}
+      });
     })();
 
     const params = new URLSearchParams(window.location.search);
     const rawSrc = params.get("src");
     const playlistUrl = params.get("list") || "/playlist.json";
+    const L = __PVL_LABELS__;
 
     const video = document.getElementById("video");
     const overlay = document.getElementById("overlay");
@@ -937,8 +1088,8 @@ public sealed class PlayerFilesService
         upNextTitle.textContent = nextItem.title;
         upNextMeta.textContent = nextItem.playbackSrc || nextItem.src;
       } else {
-        upNextTitle.textContent = "End of playlist";
-        upNextMeta.textContent = "No next video available.";
+        upNextTitle.textContent = L.endOfPlaylist;
+        upNextMeta.textContent = L.noNextVideo;
       }
     }
 
@@ -946,16 +1097,17 @@ public sealed class PlayerFilesService
       playlistEl.innerHTML = "";
 
       if (!playlist.length) {
-        playlistEl.innerHTML = '<div class="empty">playlist.json is empty or unavailable.</div>';
-        queueSubtitle.textContent = "Single video mode";
-        playlistBadge.textContent = "Playlist: 0 items";
+        playlistEl.innerHTML = '<div class="empty"></div>';
+        playlistEl.querySelector(".empty").textContent = L.playlistUnavailable;
+        queueSubtitle.textContent = L.singleVideoMode;
+        playlistBadge.textContent = L.playlist + ": 0 " + L.items;
         updateNavButtons();
         updateUpNext();
         return;
       }
 
-      queueSubtitle.textContent = playlist.length + " video(s)";
-      playlistBadge.textContent = "Playlist: " + playlist.length + " items";
+      queueSubtitle.textContent = playlist.length + " " + L.videos;
+      playlistBadge.textContent = L.playlist + ": " + playlist.length + " " + L.items;
 
       playlist.forEach((item, index) => {
         const button = document.createElement("button");
@@ -964,11 +1116,13 @@ public sealed class PlayerFilesService
         button.innerHTML = `
           <div class="playlist-top">
             <div class="playlist-index">#${String(index + 1).padStart(2, "0")}</div>
-            ${index === currentIndex ? '<div class="playlist-state">Now playing</div>' : ""}
+            ${index === currentIndex ? '<div class="playlist-state"></div>' : ""}
           </div>
           <div class="playlist-name"></div>
           <div class="playlist-src"></div>
         `;
+        const state = button.querySelector(".playlist-state");
+        if (state) state.textContent = L.nowPlaying;
         button.querySelector(".playlist-name").textContent = item.title;
         button.querySelector(".playlist-src").textContent = item.playbackSrc || item.src;
         button.addEventListener("click", () => navigateToIndex(index, true));
@@ -985,9 +1139,9 @@ public sealed class PlayerFilesService
       videoSubtitle.textContent = src;
 
       if (currentIndex >= 0 && playlist[currentIndex]) {
-        metaInfo.textContent = "Playing " + (currentIndex + 1) + " of " + playlist.length + " | " + playlist[currentIndex].title;
+        metaInfo.textContent = L.playing + " " + (currentIndex + 1) + " " + L.of + " " + playlist.length + " | " + playlist[currentIndex].title;
       } else {
-        metaInfo.textContent = "Single video mode • " + fileName;
+        metaInfo.textContent = L.singleVideoMode + " • " + fileName;
       }
     }
 
@@ -995,17 +1149,17 @@ public sealed class PlayerFilesService
       const decodedSrc = decodePath(src);
 
       if (!decodedSrc) {
-        showOverlay("No video source", "Add a source via ?src=/path/to/video.mp4", true);
+        showOverlay(L.noVideoSource, L.addSource, true);
         return;
       }
 
       if (!isMp4File(decodedSrc)) {
-        showOverlay("Unsupported source", "Expected a direct .mp4 file", true);
+        showOverlay(L.unsupportedSource, L.expectedMp4, true);
         return;
       }
 
       setVideoMeta(decodedSrc);
-      showOverlay("Loading video", "Fetching MP4 file...");
+      showOverlay(L.loadingVideo, L.fetchingMp4);
 
       video.pause();
       video.preload = "auto";
@@ -1018,8 +1172,8 @@ public sealed class PlayerFilesService
           hideOverlay();
         } catch {
           showOverlay(
-            "Ready to play",
-            "Autoplay was blocked. Press Play to continue.",
+            L.readyToPlay,
+            L.autoplayBlocked,
             false
           );
         }
@@ -1030,10 +1184,10 @@ public sealed class PlayerFilesService
       video.addEventListener("loadedmetadata", () => {
         const duration = Math.round(video.duration || 0);
         const prefix = currentIndex >= 0
-          ? ("Playing " + (currentIndex + 1) + " of " + playlist.length + " | ")
+          ? (L.playing + " " + (currentIndex + 1) + " " + L.of + " " + playlist.length + " | ")
           : "";
         videoSubtitle.textContent =
-          prefix + getFileName(video.currentSrc || video.src) + " | " + duration + " sec";
+          prefix + getFileName(video.currentSrc || video.src) + " | " + duration + " " + L.sec;
         fitPlayer();
       });
 
@@ -1043,7 +1197,7 @@ public sealed class PlayerFilesService
       });
 
       video.addEventListener("waiting", () => {
-        showOverlay("Buffering", "Please wait...");
+        showOverlay(L.buffering, L.pleaseWait);
       });
 
       video.addEventListener("playing", () => {
@@ -1059,26 +1213,26 @@ public sealed class PlayerFilesService
 
       video.addEventListener("error", () => {
         const mediaError = video.error;
-        let message = "The file could not be loaded.";
+        let message = L.fileCouldNotLoad;
 
         if (mediaError) {
           switch (mediaError.code) {
             case MediaError.MEDIA_ERR_ABORTED:
-              message = "Playback was aborted.";
+              message = L.playbackAborted;
               break;
             case MediaError.MEDIA_ERR_NETWORK:
-              message = "A network error occurred while loading the video.";
+              message = L.networkError;
               break;
             case MediaError.MEDIA_ERR_DECODE:
-              message = "The video file is corrupted or cannot be decoded.";
+              message = L.decodeError;
               break;
             case MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED:
-              message = "This video source is not supported.";
+              message = L.sourceNotSupported;
               break;
           }
         }
 
-        showOverlay("Playback error", message, true);
+        showOverlay(L.playbackError, message, true);
       });
     }
 
@@ -1169,7 +1323,7 @@ public sealed class PlayerFilesService
           return;
         }
 
-        showOverlay("No videos found", "playlist.json is empty or no supported videos were found.", true);
+        showOverlay(L.noVideosFound, L.noSupportedVideos, true);
         renderPlaylist();
         return;
       }

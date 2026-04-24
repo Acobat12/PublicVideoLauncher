@@ -1,0 +1,328 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        x:Class="PublicVideoLauncher.TranslationStudioWindow"
+        Title="Translation Studio"
+        Width="1180"
+        Height="900"
+        MinWidth="960"
+        MinHeight="760"
+        Background="#07101E"
+        Foreground="#F8FAFC"
+        WindowStartupLocation="CenterOwner">
+
+  <Window.Styles>
+    <Style Selector="TextBlock">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+    </Style>
+
+    <Style Selector="TextBlock.muted">
+      <Setter Property="Foreground" Value="#94A3B8"/>
+    </Style>
+
+    <Style Selector="TextBox">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="Background" Value="#0F172A"/>
+      <Setter Property="BorderBrush" Value="#334155"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="Padding" Value="10,8"/>
+    </Style>
+
+    <Style Selector="ComboBox">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="Background" Value="#0F172A"/>
+      <Setter Property="BorderBrush" Value="#334155"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="MinWidth" Value="220"/>
+    </Style>
+
+    <Style Selector="NumericUpDown">
+      <Setter Property="Foreground" Value="#F8FAFC"/>
+      <Setter Property="Background" Value="#0F172A"/>
+      <Setter Property="BorderBrush" Value="#334155"/>
+      <Setter Property="BorderThickness" Value="1"/>
+    </Style>
+
+    <Style Selector="CheckBox">
+      <Setter Property="Foreground" Value="#E2E8F0"/>
+    </Style>
+
+    <Style Selector="Button">
+      <Setter Property="Foreground" Value="#FFFFFF"/>
+      <Setter Property="Background" Value="#334155"/>
+      <Setter Property="BorderBrush" Value="#475569"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="10"/>
+      <Setter Property="Padding" Value="16,10"/>
+      <Setter Property="FontWeight" Value="SemiBold"/>
+      <Setter Property="MinWidth" Value="96"/>
+    </Style>
+
+    <Style Selector="Button:pointerover">
+      <Setter Property="Background" Value="#475569"/>
+    </Style>
+
+    <Style Selector="Button.primary">
+      <Setter Property="Background" Value="#16A34A"/>
+      <Setter Property="BorderBrush" Value="#22C55E"/>
+    </Style>
+
+    <Style Selector="Button.primary:pointerover">
+      <Setter Property="Background" Value="#22C55E"/>
+    </Style>
+
+    <Style Selector="Button.pink">
+      <Setter Property="Background" Value="#EC4899"/>
+      <Setter Property="BorderBrush" Value="#F472B6"/>
+    </Style>
+
+    <Style Selector="Button.pink:pointerover">
+      <Setter Property="Background" Value="#F472B6"/>
+    </Style>
+
+    <Style Selector="Button.blue">
+      <Setter Property="Background" Value="#2563EB"/>
+      <Setter Property="BorderBrush" Value="#60A5FA"/>
+    </Style>
+
+    <Style Selector="Button.blue:pointerover">
+      <Setter Property="Background" Value="#3B82F6"/>
+    </Style>
+
+    <Style Selector="Button.help">
+      <Setter Property="Width" Value="24"/>
+      <Setter Property="Height" Value="24"/>
+      <Setter Property="MinWidth" Value="24"/>
+      <Setter Property="MinHeight" Value="24"/>
+      <Setter Property="Padding" Value="0"/>
+      <Setter Property="Background" Value="#374151"/>
+      <Setter Property="BorderBrush" Value="#475569"/>
+      <Setter Property="FontWeight" Value="Bold"/>
+      <Setter Property="CornerRadius" Value="6"/>
+    </Style>
+
+    <Style Selector="ProgressBar.studioBusy">
+      <Setter Property="Height" Value="10"/>
+      <Setter Property="IsIndeterminate" Value="True"/>
+      <Setter Property="Foreground" Value="#38BDF8"/>
+      <Setter Property="Background" Value="#172338"/>
+    </Style>
+  </Window.Styles>
+
+  <Grid RowDefinitions="Auto,*,Auto,Auto" Margin="14" RowSpacing="10">
+    <Border Grid.Row="0"
+            Padding="16"
+            CornerRadius="16"
+            BorderThickness="1"
+            BorderBrush="#24324B"
+            Background="#0B1220">
+      <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="16" RowSpacing="10">
+        <StackPanel Grid.Row="0" Grid.Column="0" Spacing="4">
+          <TextBlock Text="Translation Studio" FontSize="24" FontWeight="Bold"/>
+        </StackPanel>
+
+        <Border Grid.Row="0" Grid.Column="1"
+                Padding="12,8"
+                CornerRadius="12"
+                Background="#111C31"
+                BorderBrush="#24324B"
+                BorderThickness="1">
+          <StackPanel Spacing="2">
+            <TextBlock Text="Active tunnel" Classes="muted" FontSize="12"/>
+            <TextBlock x:Name="StudioStatusTextBlock" Text="Ready" FontWeight="SemiBold"/>
+          </StackPanel>
+        </Border>
+
+        <TextBlock x:Name="OperationTextBlock"
+                   Grid.Row="1"
+                   Grid.Column="0"
+                   Grid.ColumnSpan="2"
+                   Text="Ready to prepare."
+                   Foreground="#93C5FD"/>
+
+        <ProgressBar x:Name="BusyProgressBar"
+                     Grid.Row="2"
+                     Grid.Column="0"
+                     Grid.ColumnSpan="2"
+                     Classes="studioBusy"
+                     IsVisible="False"/>
+      </Grid>
+    </Border>
+
+    <ScrollViewer Grid.Row="1"
+                  VerticalScrollBarVisibility="Auto"
+                  HorizontalScrollBarVisibility="Disabled">
+    <Grid ColumnDefinitions="2*,1.2*" ColumnSpacing="10">
+      <Border Grid.Column="0"
+              Padding="14"
+              CornerRadius="14"
+              BorderThickness="1"
+              BorderBrush="#24324B"
+              Background="#0B1220">
+        <Grid ColumnDefinitions="Auto,*"
+              RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto,*,Auto"
+              ColumnSpacing="12"
+              RowSpacing="10">
+
+          <StackPanel Grid.Row="0" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Video" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="Video" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <ComboBox x:Name="VideoComboBox" Grid.Row="0" Grid.Column="1"/>
+
+          <StackPanel Grid.Row="1" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Options" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="Options" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <CheckBox x:Name="AutoMergeCheckBox"
+                    Grid.Row="1"
+                    Grid.Column="1"
+                    IsChecked="True"
+                    Content="Auto build final video after translated mp3 is downloaded"/>
+
+          <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Segmentation" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="Segmentation" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <CheckBox x:Name="SplitLongVideoCheckBox" Grid.Row="2" Grid.Column="1" Content="Split long videos into translation segments"/>
+
+          <StackPanel Grid.Row="3" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Split threshold (min)" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="SplitThreshold" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <NumericUpDown x:Name="SplitThresholdNumeric" Grid.Row="3" Grid.Column="1" Minimum="15" Maximum="1440" Increment="15" FormatString="N0"/>
+
+          <StackPanel Grid.Row="4" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Target segment length (min)" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="TargetSegment" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <NumericUpDown x:Name="TargetSegmentNumeric" Grid.Row="4" Grid.Column="1" Minimum="10" Maximum="480" Increment="10" FormatString="N0"/>
+
+          <StackPanel Grid.Row="5" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Job summary" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="JobSummary" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <TextBox x:Name="SummaryTextBox" Grid.Row="5" Grid.Column="1" IsReadOnly="True" TextWrapping="Wrap"/>
+
+          <StackPanel Grid.Row="6" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Payload" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="Payload" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <TextBox x:Name="PayloadPathTextBox" Grid.Row="6" Grid.Column="1" IsReadOnly="True" TextWrapping="Wrap"/>
+
+          <StackPanel Grid.Row="7" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Player URL" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="PlayerUrl" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <Grid Grid.Row="7" Grid.Column="1" ColumnDefinitions="*,Auto" ColumnSpacing="8">
+            <TextBox x:Name="PlayerUrlTextBox" Grid.Column="0" IsReadOnly="True" TextWrapping="Wrap"/>
+            <Button x:Name="CopyUrlButton" Grid.Column="1" Content="Copy" Classes="blue"/>
+          </Grid>
+
+          <StackPanel Grid.Row="8" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Top">
+            <TextBlock Text="Segments" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="Segments" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <Border Grid.Row="8" Grid.Column="1"
+                  BorderBrush="#334155"
+                  BorderThickness="1"
+                  CornerRadius="10"
+                  Background="#0F172A"
+                  Padding="0">
+            <ListBox x:Name="SegmentsListBox"
+                     MinHeight="240"
+                     Background="Transparent"
+                     BorderThickness="0"/>
+          </Border>
+
+          <StackPanel Grid.Row="9" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+            <TextBlock Text="Final output" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Classes="help" Content="?" Tag="FinalOutput" Click="HelpButton_OnClick"/>
+          </StackPanel>
+          <TextBox x:Name="OutputPathTextBox" Grid.Row="9" Grid.Column="1" IsReadOnly="True" TextWrapping="Wrap"/>
+        </Grid>
+      </Border>
+
+      <Grid Grid.Column="1" RowDefinitions="Auto,*" RowSpacing="10">
+        <Border Grid.Row="0"
+                Padding="14"
+                CornerRadius="14"
+                BorderThickness="1"
+                BorderBrush="#24324B"
+                Background="#0B1220">
+          <StackPanel Spacing="8">
+            <TextBlock Text="Workflow" FontWeight="SemiBold" FontSize="16"/>
+            <Border Padding="10" CornerRadius="10" Background="#111C31" BorderBrush="#24324B" BorderThickness="1">
+              <StackPanel Spacing="4">
+                <TextBlock Text="Step 1. Prepare" FontWeight="SemiBold"/>
+                <TextBlock Classes="muted" Text="Creates source.mp4, payload.mp4 and playlist.json." TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
+            <Border Padding="10" CornerRadius="10" Background="#111C31" BorderBrush="#24324B" BorderThickness="1">
+              <StackPanel Spacing="4">
+                <TextBlock Text="Step 2. Browser" FontWeight="SemiBold"/>
+                <TextBlock Classes="muted" Text="Open Playlist or Next." TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
+            <Border Padding="10" CornerRadius="10" Background="#111C31" BorderBrush="#24324B" BorderThickness="1">
+              <StackPanel Spacing="4">
+                <TextBlock Text="Step 3. Build final" FontWeight="SemiBold"/>
+                <TextBlock Classes="muted" Text="Translated mp3 is saved automatically. Build final if Auto build is off." TextWrapping="Wrap"/>
+              </StackPanel>
+            </Border>
+            <TextBlock Classes="muted" Text="Short jobs have one segment. Long jobs show all segments." TextWrapping="Wrap"/>
+          </StackPanel>
+        </Border>
+
+        <Border Grid.Row="1"
+                Padding="10"
+                CornerRadius="14"
+                BorderThickness="1"
+                BorderBrush="#24324B"
+                Background="#0B1220">
+          <Grid RowDefinitions="Auto,*" RowSpacing="8">
+            <TextBlock Grid.Row="0" Text="Recent actions" FontWeight="SemiBold"/>
+            <TextBox x:Name="LogTextBox"
+                     Grid.Row="1"
+                     IsReadOnly="True"
+                     AcceptsReturn="True"
+                     TextWrapping="Wrap"
+                     Background="#020817"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto"
+                     ScrollViewer.HorizontalScrollBarVisibility="Auto"/>
+          </Grid>
+        </Border>
+      </Grid>
+    </Grid>
+    </ScrollViewer>
+
+    <Border Grid.Row="2"
+            Padding="12"
+            CornerRadius="14"
+            BorderThickness="1"
+            BorderBrush="#24324B"
+            Background="#0B1220">
+      <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left">
+        <Button x:Name="LoadJobButton" Content="Load job" Margin="0,0,8,8"/>
+        <Button x:Name="PrepareButton" Content="Prepare" Classes="primary" Margin="0,0,8,8"/>
+        <Button x:Name="OpenFullPlaylistButton" Content="Playlist" Classes="blue" Margin="0,0,8,8"/>
+        <Button x:Name="OpenNextUntranslatedButton" Content="Next" Margin="0,0,8,8"/>
+        <Button x:Name="OpenPlayerButton" Content="Segment" Classes="blue" Margin="0,0,8,8" IsVisible="False"/>
+        <Button x:Name="ImportAudioButton" Content="Import audio" Margin="0,0,8,8"/>
+        <Button x:Name="MergeSegmentButton" Content="Merge" Margin="0,0,8,8" IsVisible="False"/>
+        <Button x:Name="BuildFinalButton" Content="Build final" Classes="pink" Margin="0,0,8,8"/>
+        <Button x:Name="OpenJobFolderButton" Content="Folder" Margin="0,0,8,8"/>
+        <Button x:Name="OpenMergedOutputButton" Content="Output" Classes="blue" Margin="0,0,8,8"/>
+        <Button x:Name="CloseButton" Content="Close" Margin="0,0,8,8"/>
+      </WrapPanel>
+    </Border>
+
+    <TextBlock Grid.Row="3"
+               Classes="muted"
+               HorizontalAlignment="Right"
+               Text="Quick path: Prepare → Playlist / Next → wait for mp3 → Build final"/>
+  </Grid>
+</Window>

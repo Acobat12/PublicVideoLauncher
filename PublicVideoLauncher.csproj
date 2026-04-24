@@ -10,7 +10,7 @@
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <AssemblyName>PublicVideoLauncher</AssemblyName>
     <RootNamespace>PublicVideoLauncher</RootNamespace>
-    <Version Condition="'$(Version)' == ''">1.0.3</Version>
+    <Version Condition="'$(Version)' == ''">1.0.4</Version>
     <AssemblyVersion Condition="'$(AssemblyVersion)' == ''">$(Version)</AssemblyVersion>
     <FileVersion Condition="'$(FileVersion)' == ''">$(Version)</FileVersion>
     <InformationalVersion Condition="'$(InformationalVersion)' == ''">$(Version)</InformationalVersion>
@@ -18,11 +18,11 @@
     <ApplicationIcon Condition="('$(RuntimeIdentifier)' != '' and $([System.String]::Copy('$(RuntimeIdentifier)').StartsWith('win'))) or ('$(RuntimeIdentifier)' == '' and $([MSBuild]::IsOSPlatform('Windows')))">Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
 
-  <ItemGroup>
-    <Compile Remove="obj\**\*.cs;bin\**\*.cs" />
-    <EmbeddedResource Remove="obj\**;bin\**" />
-    <None Remove="obj\**;bin\**" />
-  </ItemGroup>
+<ItemGroup>
+  <Compile Remove="obj\**\*.cs;bin\**\*.cs;tests\**\*.cs" />
+  <EmbeddedResource Remove="obj\**;bin\**;tests\**" />
+  <None Remove="obj\**;bin\**;tests\**" />
+</ItemGroup>
 
   <ItemGroup>
     <AvaloniaResource Include="Assets/AppIcon.png" />
@@ -39,7 +39,5 @@
       <IncludeAssets Condition="'$(Configuration)' != 'Debug'">None</IncludeAssets>
       <PrivateAssets Condition="'$(Configuration)' != 'Debug'">All</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="xunit.v3.assert" Version="3.2.2" />
-    <PackageReference Include="xunit.v3.extensibility.core" Version="3.2.2" />
   </ItemGroup>
 </Project>
