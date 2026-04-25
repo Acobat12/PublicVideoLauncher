@@ -62,8 +62,8 @@ jobs:
           VERSION: ${{ needs.resolve-version.outputs.version }}
 
   build:
-    needs: [resolve-version, create-release]
-    if: always() && needs.resolve-version.result == 'success'
+    needs: [resolve-version]
+    if: needs.resolve-version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -153,9 +153,27 @@ jobs:
         shell: bash
         run: |
           cd artifacts
-          find releases source -type f 2>/dev/null | sort | while read -r file; do
-            sha256sum "$file"
-          done > SHA256SUMS-${{ runner.os }}.txt
+
+          files=()
+
+          if [ -d releases ]; then
+            while IFS= read -r -d '' file; do
+              files+=("$file")
+            done < <(find releases -type f -print0)
+          fi
+
+          if [ -d source ]; then
+            while IFS= read -r -d '' file; do
+              files+=("$file")
+            done < <(find source -type f -print0)
+          fi
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No files for checksums."
+            exit 0
+          fi
+
+          printf '%s\0' "${files[@]}" | sort -z | xargs -0 sha256sum > SHA256SUMS-${{ runner.os }}.txt
 
       - name: Upload release files to GitHub Release
         if: needs.resolve-version.outputs.create_release == 'true'
