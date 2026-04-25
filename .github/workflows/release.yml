@@ -16,6 +16,9 @@ on:
         default: true
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   resolve-version:
     runs-on: ubuntu-latest
@@ -36,12 +39,31 @@ jobs:
             TAG="v$VERSION"
             CREATE_RELEASE="${{ inputs.create_github_release }}"
           fi
+
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "create_release=$CREATE_RELEASE" >> "$GITHUB_OUTPUT"
 
-  build:
+  create-release:
     needs: resolve-version
+    if: needs.resolve-version.outputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create or update GitHub release
+        shell: bash
+        run: |
+          gh release view "${TAG}" >/dev/null 2>&1 || \
+            gh release create "${TAG}" \
+              --title "PublicVideoLauncher ${VERSION}" \
+              --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve-version.outputs.tag }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
+
+  build:
+    needs: [resolve-version, create-release]
+    if: always() && needs.resolve-version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
@@ -55,10 +77,13 @@ jobs:
           - os: macos-latest
             shell: bash
             runtimes: osx-x64 osx-arm64
+
     runs-on: ${{ matrix.os }}
+
     env:
       APP_NAME: PublicVideoLauncher
       APP_VERSION: ${{ needs.resolve-version.outputs.version }}
+      TAG_NAME: ${{ needs.resolve-version.outputs.tag }}
 
     steps:
       - uses: actions/checkout@v5
@@ -123,51 +148,42 @@ jobs:
           SELF_CONTAINED=true \
           ./build/release.sh $RUNTIMES
 
-      - name: Upload release artifacts
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ env.APP_NAME }}-${{ runner.os }}-${{ env.APP_VERSION }}
-          path: |
-            artifacts/releases
-          if-no-files-found: ignore
-          retention-days: 1
-
-      - name: Upload source archives
-        if: runner.os == 'Linux'
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ env.APP_NAME }}-source-${{ env.APP_VERSION }}
-          path: |
-            artifacts/source
-          if-no-files-found: ignore
-          retention-days: 1
-
-  github-release:
-    needs: [resolve-version, build]
-    if: needs.resolve-version.outputs.create_release == 'true'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v5
-        with:
-          pattern: PublicVideoLauncher-*
-          merge-multiple: true
-          path: collected
-
-      - name: Generate consolidated checksums
+      - name: Generate checksums
+        if: needs.resolve-version.outputs.create_release == 'true'
         shell: bash
         run: |
-          : > collected/SHA256SUMS.txt
-          find collected -type f ! -name 'SHA256SUMS.txt' -print0 | sort -z | while IFS= read -r -d '' file; do
-            sha256sum "$file" | awk -v rel="${file#collected/}" '{print tolower($1) "  " rel}' >> collected/SHA256SUMS.txt
-          done
+          cd artifacts
+          find releases source -type f 2>/dev/null | sort | while read -r file; do
+            sha256sum "$file"
+          done > SHA256SUMS-${{ runner.os }}.txt
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.resolve-version.outputs.tag }}
-          name: PublicVideoLauncher ${{ needs.resolve-version.outputs.version }}
-          generate_release_notes: true
-          files: |
-            collected/**/*
+      - name: Upload release files to GitHub Release
+        if: needs.resolve-version.outputs.create_release == 'true'
+        shell: bash
+        run: |
+          files=()
+
+          if [ -d artifacts/releases ]; then
+            while IFS= read -r -d '' file; do
+              files+=("$file")
+            done < <(find artifacts/releases -type f -print0)
+          fi
+
+          if [ "${RUNNER_OS}" = "Linux" ] && [ -d artifacts/source ]; then
+            while IFS= read -r -d '' file; do
+              files+=("$file")
+            done < <(find artifacts/source -type f -print0)
+          fi
+
+          if [ -f "artifacts/SHA256SUMS-${RUNNER_OS}.txt" ]; then
+            files+=("artifacts/SHA256SUMS-${RUNNER_OS}.txt")
+          fi
+
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "No release files found."
+            exit 0
+          fi
+
+          gh release upload "${TAG_NAME}" "${files[@]}" --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
