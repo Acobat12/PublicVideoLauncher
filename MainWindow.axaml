@@ -121,7 +121,7 @@
             BorderThickness="1"
             BorderBrush="#24324B"
             Background="#0B1220">
-      <Grid RowDefinitions="Auto,Auto,Auto,Auto"
+      <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto"
             RowSpacing="10">
 
         <Grid Grid.Row="0"
@@ -183,7 +183,7 @@
         </Grid>
 
         <Grid Grid.Row="3"
-              ColumnDefinitions="Auto,*,Auto,Auto"
+              ColumnDefinitions="Auto,*,Auto"
               ColumnSpacing="10">
           <TextBlock Grid.Column="0" Text="Tunnel auth" FontWeight="Bold" VerticalAlignment="Center"/>
           <TextBox x:Name="TunnelAuthTextBox"
@@ -195,18 +195,39 @@
                    IsVisible="False"
                    Watermark="Optional path to zrok / lt / xTunnel.exe / vk-tunnel.cmd / npx"/>
 
-          <CheckBox x:Name="MergeTranslationCheckBox"
-                    Classes="success"
-                    Grid.Column="2"
-                    VerticalAlignment="Center"
-                    Margin="0,0,8,0"
-                    Content="Auto merge translated audio and save output"/>
-
           <Button x:Name="TunnelSetupButton"
-                  Grid.Column="3"
+                  Grid.Column="2"
                   Content="Setup..."
                   IsVisible="False"/>
         </Grid>
+
+        <WrapPanel Grid.Row="4" Orientation="Horizontal">
+          <CheckBox x:Name="MergeTranslationCheckBox"
+                    Classes="success"
+                    VerticalAlignment="Center"
+                    Margin="0,0,18,8"
+                    Content="Auto merge translated audio and save output"/>
+
+          <TextBlock Text="Original %" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,8"/>
+          <NumericUpDown x:Name="OriginalAudioVolumeNumeric"
+                         Width="111"
+                         Minimum="0"
+                         Maximum="100"
+                         Increment="1"
+                         Value="25"
+                         FormatString="0"
+                         Margin="0,0,18,8"/>
+
+          <TextBlock Text="MP3 %" FontWeight="Bold" VerticalAlignment="Center" Margin="0,0,8,8"/>
+          <NumericUpDown x:Name="TranslatedAudioVolumeNumeric"
+                         Width="111"
+                         Minimum="0"
+                         Maximum="100"
+                         Increment="1"
+                         Value="100"
+                         FormatString="0"
+                         Margin="0,0,0,8"/>
+        </WrapPanel>
       </Grid>
     </Border>
 

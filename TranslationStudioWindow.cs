@@ -27,13 +27,15 @@ public sealed partial class TranslationStudioWindow : Window
     private readonly Func<VideoEntry, CancellationToken, Task<TranslationStudioJob?>> _loadExistingJobAsync;
     private readonly Func<TranslationStudioJob, TranslationStudioSegment?, CancellationToken, Task<string>> _openPlayerAsync;
     private readonly Func<TranslationStudioJob, TranslationStudioSegment, string, CancellationToken, Task<TranslationStudioJob>> _importAudioAsync;
-    private readonly Func<TranslationStudioJob, TranslationStudioSegment, CancellationToken, Task<TranslationStudioJob>> _mergeSegmentAsync;
-    private readonly Func<TranslationStudioJob, CancellationToken, Task<TranslationStudioJob>> _buildFinalAsync;
+    private readonly Func<TranslationStudioJob, TranslationStudioSegment, double, double, CancellationToken, Task<TranslationStudioJob>> _mergeSegmentAsync;
+    private readonly Func<TranslationStudioJob, double, double, CancellationToken, Task<TranslationStudioJob>> _buildFinalAsync;
     private readonly Func<TranslationStudioJob, CancellationToken, Task<TranslationStudioJob>> _saveJobAsync;
     private readonly AppLanguage _language;
 
     private readonly ComboBox _videoComboBox;
     private readonly CheckBox _autoMergeCheckBox;
+    private readonly NumericUpDown _originalAudioVolumeNumeric;
+    private readonly NumericUpDown _translatedAudioVolumeNumeric;
     private readonly CheckBox _splitLongVideoCheckBox;
     private readonly NumericUpDown _splitThresholdNumeric;
     private readonly NumericUpDown _targetSegmentNumeric;
@@ -73,8 +75,8 @@ public sealed partial class TranslationStudioWindow : Window
             static (_, _) => Task.FromResult<TranslationStudioJob?>(null),
             static (_, _, _) => throw new InvalidOperationException("Designer constructor."),
             static (_, _, _, _) => throw new InvalidOperationException("Designer constructor."),
-            static (_, _, _) => throw new InvalidOperationException("Designer constructor."),
-            static (_, _) => throw new InvalidOperationException("Designer constructor."),
+            static (_, _, _, _, _) => throw new InvalidOperationException("Designer constructor."),
+            static (_, _, _, _) => throw new InvalidOperationException("Designer constructor."),
             static (_, _) => throw new InvalidOperationException("Designer constructor."),
             AppLanguage.English)
     {
@@ -90,8 +92,8 @@ public sealed partial class TranslationStudioWindow : Window
         Func<VideoEntry, CancellationToken, Task<TranslationStudioJob?>> loadExistingJobAsync,
         Func<TranslationStudioJob, TranslationStudioSegment?, CancellationToken, Task<string>> openPlayerAsync,
         Func<TranslationStudioJob, TranslationStudioSegment, string, CancellationToken, Task<TranslationStudioJob>> importAudioAsync,
-        Func<TranslationStudioJob, TranslationStudioSegment, CancellationToken, Task<TranslationStudioJob>> mergeSegmentAsync,
-        Func<TranslationStudioJob, CancellationToken, Task<TranslationStudioJob>> buildFinalAsync,
+        Func<TranslationStudioJob, TranslationStudioSegment, double, double, CancellationToken, Task<TranslationStudioJob>> mergeSegmentAsync,
+        Func<TranslationStudioJob, double, double, CancellationToken, Task<TranslationStudioJob>> buildFinalAsync,
         Func<TranslationStudioJob, CancellationToken, Task<TranslationStudioJob>> saveJobAsync,
         AppLanguage language)
     {
@@ -112,6 +114,8 @@ public sealed partial class TranslationStudioWindow : Window
 
         _videoComboBox = this.FindControl<ComboBox>("VideoComboBox")!;
         _autoMergeCheckBox = this.FindControl<CheckBox>("AutoMergeCheckBox")!;
+        _originalAudioVolumeNumeric = this.FindControl<NumericUpDown>("StudioOriginalAudioVolumeNumeric")!;
+        _translatedAudioVolumeNumeric = this.FindControl<NumericUpDown>("StudioTranslatedAudioVolumeNumeric")!;
         _splitLongVideoCheckBox = this.FindControl<CheckBox>("SplitLongVideoCheckBox")!;
         _splitThresholdNumeric = this.FindControl<NumericUpDown>("SplitThresholdNumeric")!;
         _targetSegmentNumeric = this.FindControl<NumericUpDown>("TargetSegmentNumeric")!;
@@ -142,6 +146,8 @@ public sealed partial class TranslationStudioWindow : Window
 
         _videoComboBox.SelectionChanged += VideoComboBox_OnSelectionChanged;
         _autoMergeCheckBox.PropertyChanged += OptionControl_OnPropertyChanged;
+        _originalAudioVolumeNumeric.PropertyChanged += OptionControl_OnPropertyChanged;
+        _translatedAudioVolumeNumeric.PropertyChanged += OptionControl_OnPropertyChanged;
         _splitLongVideoCheckBox.PropertyChanged += OptionControl_OnPropertyChanged;
         _splitThresholdNumeric.PropertyChanged += OptionControl_OnPropertyChanged;
         _targetSegmentNumeric.PropertyChanged += OptionControl_OnPropertyChanged;
@@ -203,6 +209,12 @@ public sealed partial class TranslationStudioWindow : Window
             }
         }
 
+        if (e.Property == NumericUpDown.ValueProperty && _currentJob is not null)
+        {
+            UpdateCurrentJobAudioSettingsFromControls();
+            _ = SaveCurrentJobSettingsAsync();
+        }
+
         if (e.Property == ToggleButton.IsCheckedProperty || e.Property == NumericUpDown.ValueProperty)
             RefreshJobUi();
     }
@@ -230,7 +242,9 @@ public sealed partial class TranslationStudioWindow : Window
                 AutoMergeOnCallback = _autoMergeCheckBox.IsChecked == true,
                 SplitLongVideo = _splitLongVideoCheckBox.IsChecked == true,
                 SplitIfLongerThanMinutes = (int)Math.Round(_splitThresholdNumeric.Value ?? 120),
-                TargetSegmentMinutes = (int)Math.Round(_targetSegmentNumeric.Value ?? 60)
+                TargetSegmentMinutes = (int)Math.Round(_targetSegmentNumeric.Value ?? 60),
+                OriginalAudioVolumePercent = GetOriginalAudioVolumePercent(),
+                TranslatedAudioVolumePercent = GetTranslatedAudioVolumePercent()
             };
 
             _currentJob = await _prepareJobAsync(request, CancellationToken.None);
@@ -316,6 +330,7 @@ public sealed partial class TranslationStudioWindow : Window
             SetBusy(true, F("Opening the next untranslated segment {0}/{1}...", nextSegment.Index, nextSegment.TotalSegments));
             var segmentIndex = Math.Max(0, _currentJob.Segments.FindIndex(x => string.Equals(x.SegmentId, nextSegment.SegmentId, StringComparison.OrdinalIgnoreCase)));
             _segmentsListBox.SelectedIndex = segmentIndex;
+            UpdateCurrentJobAudioSettingsFromControls();
             var url = await _openPlayerAsync(_currentJob, nextSegment, CancellationToken.None);
             RefreshDisplayedPlayerUrl();
             SetStudioStatus("Segment opened", F("Opened segment {0}/{1}. Use Playlist to return to all prepared items.", nextSegment.Index, nextSegment.TotalSegments));
@@ -349,6 +364,7 @@ public sealed partial class TranslationStudioWindow : Window
         try
         {
             SetBusy(true, F("Opening segment {0}/{1} in the browser...", selectedSegment.Index, selectedSegment.TotalSegments));
+            UpdateCurrentJobAudioSettingsFromControls();
             var url = await _openPlayerAsync(_currentJob, selectedSegment, CancellationToken.None);
             RefreshDisplayedPlayerUrl();
             SetStudioStatus("Segment opened", F("Opened segment {0}/{1}. Use Playlist to return to all prepared items.", selectedSegment.Index, selectedSegment.TotalSegments));
@@ -432,7 +448,8 @@ public sealed partial class TranslationStudioWindow : Window
         try
         {
             SetBusy(true, F("Merging segment {0}/{1} into video...", selectedSegment.Index, selectedSegment.TotalSegments));
-            _currentJob = await _mergeSegmentAsync(_currentJob, selectedSegment, CancellationToken.None);
+            UpdateCurrentJobAudioSettingsFromControls();
+            _currentJob = await _mergeSegmentAsync(_currentJob, selectedSegment, GetOriginalAudioVolumePercent(), GetTranslatedAudioVolumePercent(), CancellationToken.None);
             RefreshJobUi();
             SetStudioStatus("Segment merged", F("Segment {0}/{1} is now merged back into video.", selectedSegment.Index, selectedSegment.TotalSegments));
             AppendLog(F("Merged segment {0}/{1}.", selectedSegment.Index, selectedSegment.TotalSegments));
@@ -459,14 +476,14 @@ public sealed partial class TranslationStudioWindow : Window
         {
             if (TranslationStudioFileState.IsFinalOutputCurrent(_currentJob))
             {
-                RefreshJobUi();
-                SetStudioStatus("Final video ready", "Final output already exists. Auto build was skipped.");
                 AppendLog("Final output already exists. Build skipped.");
+                SetStudioStatus("Final video already exists", "The final translated video already exists. Build skipped.");
                 return;
             }
 
             SetBusy(true, "Building the final translated video. This can take a while...");
-            _currentJob = await _buildFinalAsync(_currentJob, CancellationToken.None);
+            UpdateCurrentJobAudioSettingsFromControls();
+            _currentJob = await _buildFinalAsync(_currentJob, GetOriginalAudioVolumePercent(), GetTranslatedAudioVolumePercent(), CancellationToken.None);
             RefreshJobUi();
             SetStudioStatus("Final video ready", "The final translated video was built successfully. You can open it from this window.");
             AppendLog("Final video built.");
@@ -490,7 +507,11 @@ public sealed partial class TranslationStudioWindow : Window
             return;
 
         if (TranslationStudioFileState.IsFinalOutputCurrent(_currentJob))
+        {
+            AppendLog("Final output already exists. Auto build skipped.");
+            SetStudioStatus("Final video already exists", "Auto build skipped because the final video already exists.");
             return;
+        }
 
         try
         {
@@ -509,7 +530,8 @@ public sealed partial class TranslationStudioWindow : Window
             }
 
             SetBusy(true, "Translated mp3 is ready. Auto build is creating the final video...");
-            _currentJob = await _buildFinalAsync(_currentJob, CancellationToken.None);
+            UpdateCurrentJobAudioSettingsFromControls();
+            _currentJob = await _buildFinalAsync(_currentJob, GetOriginalAudioVolumePercent(), GetTranslatedAudioVolumePercent(), CancellationToken.None);
             RefreshJobUi();
             SetStudioStatus("Final video ready", "The final translated video was built successfully. You can open it from this window.");
             AppendLog("Final video built automatically.");
@@ -702,6 +724,8 @@ public sealed partial class TranslationStudioWindow : Window
         if (_currentJob is not null)
         {
             _autoMergeCheckBox.IsChecked = _currentJob.AutoMergeOnCallback;
+            _originalAudioVolumeNumeric.Value = (decimal)_currentJob.OriginalAudioVolumePercent;
+            _translatedAudioVolumeNumeric.Value = (decimal)_currentJob.TranslatedAudioVolumePercent;
             _payloadPathTextBox.Text = _currentJob.PayloadPath;
             RefreshDisplayedPlayerUrl();
             _outputPathTextBox.Text = _currentJob.FinalOutputPath ?? string.Empty;
@@ -766,6 +790,8 @@ public sealed partial class TranslationStudioWindow : Window
         _copyUrlButton.IsEnabled = !busy && !string.IsNullOrWhiteSpace(_playerUrlTextBox.Text);
         _videoComboBox.IsEnabled = !busy;
         _autoMergeCheckBox.IsEnabled = !busy;
+        _originalAudioVolumeNumeric.IsEnabled = !busy;
+        _translatedAudioVolumeNumeric.IsEnabled = !busy;
         _splitLongVideoCheckBox.IsEnabled = !busy;
         _splitThresholdNumeric.IsEnabled = !busy;
         _targetSegmentNumeric.IsEnabled = !busy;
@@ -866,6 +892,16 @@ public sealed partial class TranslationStudioWindow : Window
             finalReady ? T("Ready") : T("Pending"));
     }
 
+    private void UpdateCurrentJobAudioSettingsFromControls()
+    {
+        if (_currentJob is null)
+            return;
+
+        _currentJob.OriginalAudioVolumePercent = GetOriginalAudioVolumePercent();
+        _currentJob.TranslatedAudioVolumePercent = GetTranslatedAudioVolumePercent();
+        _currentJob.AutoMergeOnCallback = _autoMergeCheckBox.IsChecked == true;
+    }
+
     private string BuildPreviewSummary(VideoEntry? entry)
     {
         if (entry is null)
@@ -878,12 +914,20 @@ public sealed partial class TranslationStudioWindow : Window
             ? F("Enabled after {0} min, target {1} min", splitThreshold, targetSegment)
             : T("Off");
 
-        return F("Selected: {0} | Active tunnel: {1} | Auto merge: {2} | Segmentation: {3}",
+        return F("Selected: {0} | Active tunnel: {1} | Auto merge: {2} | Original: {3:0.#}% | MP3: {4:0.#}% | Segmentation: {5}",
             entry.Title,
             _activeTunnelDisplayName,
             autoMerge,
+            GetOriginalAudioVolumePercent(),
+            GetTranslatedAudioVolumePercent(),
             segmentation);
     }
+
+    private double GetOriginalAudioVolumePercent()
+        => Convert.ToDouble(_originalAudioVolumeNumeric.Value ?? 8, CultureInfo.InvariantCulture);
+
+    private double GetTranslatedAudioVolumePercent()
+        => Convert.ToDouble(_translatedAudioVolumeNumeric.Value ?? 100, CultureInfo.InvariantCulture);
 
     private string BuildSegmentLabel(TranslationStudioSegment segment)
     {

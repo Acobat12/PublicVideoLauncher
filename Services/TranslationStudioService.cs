@@ -14,8 +14,8 @@ namespace PublicVideoLauncher.Services;
 
 public sealed class TranslationStudioService
 {
-    private const int CurrentSchemaVersion = 9;
-    private const string PreparationPipelineVersion = "studio-prepare-v4-mainwindow-cache-pipeline";
+    private const int CurrentSchemaVersion = 13;
+    private const string PreparationPipelineVersion = "studio-prepare-v9-plain-final-and-audio-paths";
     private readonly PlayerFilesService _playerFilesService = new();
     private readonly FfmpegService _ffmpegService = new();
 
@@ -35,10 +35,13 @@ public sealed class TranslationStudioService
         var studioRoot = GetStudioRootFolder(workspaceRoot);
         var jobFolder = Path.Combine(studioRoot, sourceEntry.Id);
         Directory.CreateDirectory(jobFolder);
+        FfmpegService.TryUnblockFile(workspaceRoot, log);
+        FfmpegService.TryUnblockFile(studioRoot, log);
+        FfmpegService.TryUnblockFile(jobFolder, log);
         var finalOutputPath = Path.Combine(
             workspaceRoot,
             "merged_output",
-            Path.GetFileNameWithoutExtension(sourceEntry.FileName) + ".studio.translated.mp4");
+            Path.GetFileNameWithoutExtension(sourceEntry.FileName) + ".mp4");
 
         var sourceDurationSeconds = await _ffmpegService.ProbeDurationAsync(ffmpegPath, sourceEntry.FullPath, cancellationToken);
         var segmentPlan = BuildAutomaticSegmentPlan(
@@ -112,6 +115,8 @@ public sealed class TranslationStudioService
             SourceVideoPath = sourceEntry.FullPath,
             SourceDurationSeconds = sourceDurationSeconds,
             AutoMergeOnCallback = request.AutoMergeOnCallback,
+            OriginalAudioVolumePercent = request.OriginalAudioVolumePercent,
+            TranslatedAudioVolumePercent = request.TranslatedAudioVolumePercent,
             IsSegmented = shouldSplit,
             SplitIfLongerThanMinutes = request.SplitIfLongerThanMinutes,
             TargetSegmentMinutes = request.TargetSegmentMinutes,
@@ -170,6 +175,7 @@ public sealed class TranslationStudioService
         var refreshRecommended = job.SchemaVersion < CurrentSchemaVersion || string.IsNullOrWhiteSpace(job.PreparationSignature);
         job.Segments ??= new List<TranslationStudioSegment>();
         job.PlayerRelativeUrl = NormalizePlayerRelativeUrl(job);
+        NormalizePlainRootOutputPaths(job);
         NormalizeSingleSegmentPaths(job);
         UnblockGeneratedFiles(job);
         job.SchemaVersion = CurrentSchemaVersion;
@@ -275,8 +281,8 @@ public sealed class TranslationStudioService
                 SourceSegmentPath = sourceMp4Path,
                 PayloadPath = payloadPath,
                 PayloadRelativeUrl = BuildRelativeUrl(workspaceRoot, payloadPath),
-                TranslatedAudioPath = Path.Combine(jobFolder, "translated_audio", sourceEntry.Id + ".translated.mp3"),
-                MergedOutputPath = Path.Combine(jobFolder, "merged", "segment-001.translated.mp4")
+                TranslatedAudioPath = Path.Combine(workspaceRoot, "translated_audio", Path.GetFileNameWithoutExtension(sourceEntry.FileName) + ".mp3"),
+                MergedOutputPath = Path.Combine(workspaceRoot, "merged_output", Path.GetFileNameWithoutExtension(sourceEntry.FileName) + ".mp4")
             }
         ];
     }
@@ -351,8 +357,9 @@ public sealed class TranslationStudioService
                 SourceSegmentPath = sourceSegmentPath,
                 PayloadPath = payloadPath,
                 PayloadRelativeUrl = BuildRelativeUrl(workspaceRoot, payloadPath),
-                TranslatedAudioPath = Path.Combine(segmentFolder, "translated_audio", $"segment-{segmentNumber:000}.translated.mp3"),
-                MergedOutputPath = Path.Combine(segmentFolder, "merged", $"segment-{segmentNumber:000}.translated.mp4"),
+
+                TranslatedAudioPath = Path.Combine(workspaceRoot, "translated_audio", $"{Path.GetFileNameWithoutExtension(sourceEntry.FileName)}.segment-{segmentNumber:000}.mp3"),
+                MergedOutputPath = Path.Combine(workspaceRoot, "merged_output", $"{Path.GetFileNameWithoutExtension(sourceEntry.FileName)}.segment-{segmentNumber:000}.mp4"),
             });
         }
 
@@ -380,7 +387,7 @@ public sealed class TranslationStudioService
         if (string.IsNullOrWhiteSpace(path))
             return;
 
-        if (!FfmpegService.TryUnblockFile(path, log))
+        if (!FfmpegService.RewriteFileWithoutAlternateStreams(path, log))
             log("Warning: Windows still reports prepared media as blocked, continuing because the media file was created: " + path);
     }
 
@@ -501,26 +508,55 @@ public sealed class TranslationStudioService
             throw new IOException("Failed to remove stale prepared folder: " + path);
     }
 
+    private static void NormalizePlainRootOutputPaths(TranslationStudioJob job)
+    {
+        if (string.IsNullOrWhiteSpace(job.WorkspaceRoot) || string.IsNullOrWhiteSpace(job.SourceVideoFileName))
+            return;
+
+        var baseName = Path.GetFileNameWithoutExtension(job.SourceVideoFileName);
+        if (string.IsNullOrWhiteSpace(baseName))
+            return;
+
+        var audioRoot = Path.Combine(job.WorkspaceRoot, "translated_audio");
+        var mergedRoot = Path.Combine(job.WorkspaceRoot, "merged_output");
+
+        if (job.Segments.Count == 1)
+        {
+            var segment = job.Segments[0];
+            segment.TranslatedAudioPath = Path.Combine(audioRoot, baseName + ".mp3");
+            segment.MergedOutputPath = Path.Combine(mergedRoot, baseName + ".mp4");
+            job.TranslatedAudioPath = segment.TranslatedAudioPath;
+            job.MergedOutputPath = segment.MergedOutputPath;
+            job.FinalOutputPath = segment.MergedOutputPath;
+            return;
+        }
+
+        foreach (var segment in job.Segments)
+        {
+            var segmentName = baseName + $".segment-{segment.Index:000}";
+            segment.TranslatedAudioPath = Path.Combine(audioRoot, segmentName + ".mp3");
+            segment.MergedOutputPath = Path.Combine(mergedRoot, segmentName + ".mp4");
+        }
+
+        job.TranslatedAudioPath = job.Segments.Count > 0 ? job.Segments[0].TranslatedAudioPath : string.Empty;
+        job.MergedOutputPath = job.Segments.Count > 0 ? job.Segments[0].MergedOutputPath : string.Empty;
+        job.FinalOutputPath = Path.Combine(mergedRoot, baseName + ".mp4");
+    }
+
     private static void NormalizeSingleSegmentPaths(TranslationStudioJob job)
     {
         if (job.Segments.Count != 1)
             return;
 
         var segment = job.Segments[0];
-        var normalizedMergedPath = Path.Combine(job.JobFolder, "merged", "segment-001.translated.mp4");
+        var normalizedMergedPath = job.FinalOutputPath;
         var currentMergedPath = segment.MergedOutputPath ?? string.Empty;
         var currentFinalPath = job.FinalOutputPath ?? string.Empty;
 
-        if (PathsEqual(currentMergedPath, normalizedMergedPath))
+        if (string.IsNullOrWhiteSpace(normalizedMergedPath) || PathsEqual(currentMergedPath, normalizedMergedPath))
             return;
 
-        try
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(normalizedMergedPath)!);
-        }
-        catch
-        {
-        }
+        Directory.CreateDirectory(Path.GetDirectoryName(normalizedMergedPath)!);
 
         if (!string.IsNullOrWhiteSpace(currentMergedPath) &&
             File.Exists(currentMergedPath) &&
@@ -528,16 +564,7 @@ public sealed class TranslationStudioService
             !File.Exists(normalizedMergedPath))
         {
             FfmpegService.CopyFileWithoutAlternateStreams(currentMergedPath, normalizedMergedPath);
-            if (!FfmpegService.TryUnblockFile(normalizedMergedPath))
-                throw new InvalidOperationException("Copied file is still blocked: " + normalizedMergedPath);
-        }
-        else if (!string.IsNullOrWhiteSpace(currentFinalPath) &&
-                 File.Exists(currentFinalPath) &&
-                 !File.Exists(normalizedMergedPath))
-        {
-            FfmpegService.CopyFileWithoutAlternateStreams(currentFinalPath, normalizedMergedPath);
-            if (!FfmpegService.TryUnblockFile(normalizedMergedPath))
-                throw new InvalidOperationException("Copied file is still blocked: " + normalizedMergedPath);
+            FfmpegService.TryUnblockFile(normalizedMergedPath);
         }
 
         segment.MergedOutputPath = normalizedMergedPath;
@@ -545,17 +572,17 @@ public sealed class TranslationStudioService
 
     private static void UnblockGeneratedFiles(TranslationStudioJob job)
     {
-        FfmpegService.TryUnblockFile(job.FinalOutputPath);
-        FfmpegService.TryUnblockFile(job.PayloadPath);
-        FfmpegService.TryUnblockFile(job.TranslatedAudioPath);
-        FfmpegService.TryUnblockFile(job.MergedOutputPath);
+        FfmpegService.RewriteFileWithoutAlternateStreams(job.FinalOutputPath);
+        FfmpegService.RewriteFileWithoutAlternateStreams(job.PayloadPath);
+        FfmpegService.RewriteFileWithoutAlternateStreams(job.TranslatedAudioPath);
+        FfmpegService.RewriteFileWithoutAlternateStreams(job.MergedOutputPath);
 
         foreach (var segment in job.Segments)
         {
-            FfmpegService.TryUnblockFile(segment.SourceSegmentPath);
-            FfmpegService.TryUnblockFile(segment.PayloadPath);
-            FfmpegService.TryUnblockFile(segment.TranslatedAudioPath);
-            FfmpegService.TryUnblockFile(segment.MergedOutputPath);
+            FfmpegService.RewriteFileWithoutAlternateStreams(segment.SourceSegmentPath);
+            FfmpegService.RewriteFileWithoutAlternateStreams(segment.PayloadPath);
+            FfmpegService.RewriteFileWithoutAlternateStreams(segment.TranslatedAudioPath);
+            FfmpegService.RewriteFileWithoutAlternateStreams(segment.MergedOutputPath);
         }
     }
 

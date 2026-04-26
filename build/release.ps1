@@ -3,7 +3,7 @@ param(
     [switch]$SelfContained,
     [switch]$SingleFile,
     [string]$Configuration = 'Release',
-    [string]$Version = '1.0.4',
+    [string]$Version = '1.0.7',
     [string]$AppName = 'PublicVideoLauncher',
     [string]$OutputRoot = 'artifacts/publish',
     [string]$ReleaseRoot = 'artifacts/releases',

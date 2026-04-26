@@ -177,11 +177,30 @@
             <TextBlock Text="Options" FontWeight="SemiBold" VerticalAlignment="Center"/>
             <Button Classes="help" Content="?" Tag="Options" Click="HelpButton_OnClick"/>
           </StackPanel>
-          <CheckBox x:Name="AutoMergeCheckBox"
-                    Grid.Row="1"
-                    Grid.Column="1"
-                    IsChecked="True"
-                    Content="Auto build final video after translated mp3 is downloaded"/>
+          <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="Auto,Auto" RowSpacing="8">
+            <CheckBox x:Name="AutoMergeCheckBox"
+                      Grid.Row="0"
+                      IsChecked="True"
+                      Content="Auto build final video after translated mp3 is downloaded"/>
+            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+              <TextBlock Text="Original %" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              <NumericUpDown x:Name="StudioOriginalAudioVolumeNumeric"
+                             Width="111"
+                             Minimum="0"
+                             Maximum="100"
+                             Increment="1"
+                             Value="25"
+                             FormatString="0"/>
+              <TextBlock Text="MP3 %" FontWeight="SemiBold" VerticalAlignment="Center"/>
+              <NumericUpDown x:Name="StudioTranslatedAudioVolumeNumeric"
+                             Width="111"
+                             Minimum="0"
+                             Maximum="100"
+                             Increment="1"
+                             Value="100"
+                             FormatString="0"/>
+            </StackPanel>
+          </Grid>
 
           <StackPanel Grid.Row="2" Grid.Column="0" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
             <TextBlock Text="Segmentation" FontWeight="SemiBold" VerticalAlignment="Center"/>

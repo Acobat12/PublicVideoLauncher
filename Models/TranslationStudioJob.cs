@@ -19,6 +19,8 @@ public sealed class TranslationStudioJob
     public string SourceVideoPath { get; set; } = string.Empty;
     public double SourceDurationSeconds { get; set; }
     public bool AutoMergeOnCallback { get; set; }
+    public double OriginalAudioVolumePercent { get; set; } = 8;
+    public double TranslatedAudioVolumePercent { get; set; } = 100;
     public bool IsSegmented { get; set; }
     public int SplitIfLongerThanMinutes { get; set; }
     public int TargetSegmentMinutes { get; set; }
@@ -84,4 +86,6 @@ public sealed class TranslationStudioPrepareRequest
     public bool SplitLongVideo { get; init; }
     public int SplitIfLongerThanMinutes { get; init; }
     public int TargetSegmentMinutes { get; init; }
+    public double OriginalAudioVolumePercent { get; init; } = 8;
+    public double TranslatedAudioVolumePercent { get; init; } = 100;
 }

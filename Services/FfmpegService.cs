@@ -346,9 +346,42 @@ public sealed class FfmpegService
 
         PrepareFreshOutputPath(destinationPath);
 
-        using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.Read);
+        using var source = new FileStream(sourcePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
         using var destination = new FileStream(destinationPath, FileMode.Create, FileAccess.Write, FileShare.None);
         source.CopyTo(destination);
+
+        if (OperatingSystem.IsWindows())
+            DeleteZoneIdentifier(destinationPath);
+    }
+
+    public static bool RewriteFileWithoutAlternateStreams(string? path, Action<string>? log = null)
+    {
+        if (!OperatingSystem.IsWindows() || string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            return TryUnblockFile(path, log);
+
+        var directory = Path.GetDirectoryName(path);
+        if (string.IsNullOrWhiteSpace(directory))
+            return TryUnblockFile(path, log);
+
+        var tempPath = Path.Combine(directory, ".pvl-unblocked-" + Guid.NewGuid().ToString("N") + Path.GetExtension(path));
+        try
+        {
+            DeleteZoneIdentifier(directory);
+            CopyFileWithoutAlternateStreams(path, tempPath);
+            DeleteZoneIdentifier(tempPath);
+
+            File.Delete(path);
+            File.Move(tempPath, path);
+            DeleteZoneIdentifier(path);
+
+            return TryUnblockFile(path, log);
+        }
+        catch (Exception ex)
+        {
+            log?.Invoke("Failed to rewrite generated file without Windows security marker " + path + ": " + ex.Message);
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { }
+            return TryUnblockFile(path, log);
+        }
     }
 
     internal static bool NeedsPowerShellUnblockFallback(string? path)
@@ -527,27 +560,74 @@ public sealed class FfmpegService
         string translatedAudioPath,
         string outputPath,
         Action<string> log,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        double originalAudioVolumePercent = 8d,
+        double translatedAudioVolumePercent = 100d)
     {
-        log($"Merging translated audio into video: {Path.GetFileName(videoPath)}");
+        var originalVolume = ClampPercent(originalAudioVolumePercent) / 100d;
+        var translatedVolume = ClampPercent(translatedAudioVolumePercent) / 100d;
+        var probe = await ProbeMediaAsync(ffmpegPath, videoPath, cancellationToken);
 
-        await RunFfmpegAsync(ffmpegPath, new[]
+        log($"Merging translated audio into video: {Path.GetFileName(videoPath)}");
+        log($"Audio mix: original {originalAudioVolumePercent:0.#}%, translated {translatedAudioVolumePercent:0.#}%");
+
+        var args = new List<string>
         {
             "-y",
             "-hide_banner",
             "-loglevel", "error",
             "-i", videoPath,
             "-i", translatedAudioPath,
-            "-map", "0:v:0",
-            "-map", "1:a:0",
-            "-c:v", "copy",
+        };
+
+        if (probe.HasAudio && originalVolume > 0d)
+        {
+            args.AddRange(new[]
+            {
+                "-filter_complex",
+                $"[0:a:0]volume={FormatVolume(originalVolume)}[original];[1:a:0]volume={FormatVolume(translatedVolume)}[translated];[original][translated]amix=inputs=2:duration=longest:dropout_transition=0:normalize=0[aout]",
+                "-map", "0:v:0",
+                "-map", "[aout]",
+            });
+        }
+        else
+        {
+            args.AddRange(new[]
+            {
+                "-filter_complex",
+                $"[1:a:0]volume={FormatVolume(translatedVolume)}[aout]",
+                "-map", "0:v:0",
+                "-map", "[aout]",
+            });
+        }
+
+        // Re-encode video here: AVI can contain codecs like Huffyuv that MP4 cannot store.
+        args.AddRange(new[]
+        {
+            "-c:v", "libx264",
+            "-preset", "veryfast",
+            "-crf", "18",
+            "-pix_fmt", "yuv420p",
             "-c:a", "aac",
             "-b:a", "192k",
             "-shortest",
             "-movflags", "+faststart",
             outputPath,
-        }, outputPath, cancellationToken);
+        });
+
+        await RunFfmpegAsync(ffmpegPath, args, outputPath, cancellationToken);
     }
+
+    private static double ClampPercent(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return 0d;
+
+        return Math.Clamp(value, 0d, 150d);
+    }
+
+    private static string FormatVolume(double value)
+        => value.ToString("0.###", CultureInfo.InvariantCulture);
 
     public async Task<double> ProbeDurationAsync(string ffmpegPath, string inputPath, CancellationToken cancellationToken)
     {
@@ -707,7 +787,7 @@ public sealed class FfmpegService
                 $"ffmpeg failed.\nOutput: {outputPath}\n\nSTDOUT:\n{stdout}\n\nSTDERR:\n{stderr}");
         }
 
-        if (!TryUnblockFile(outputPath))
+        if (!RewriteFileWithoutAlternateStreams(outputPath))
         {
             // Best-effort only: Windows Mark-of-the-Web on generated media must not abort Prepare.
         }

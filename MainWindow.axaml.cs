@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -41,6 +42,10 @@ public partial class MainWindow : Window
     private readonly CheckBox _proxyModeCheckBox;
     private readonly CheckBox _autostartBrowserCheckBox;
     private readonly CheckBox _mergeTranslationCheckBox;
+    private readonly NumericUpDown _originalAudioVolumeNumeric;
+    private readonly NumericUpDown _translatedAudioVolumeNumeric;
+    private double _originalAudioVolumePercent = 8;
+    private double _translatedAudioVolumePercent = 100;
     private readonly Grid _detailedHeaderGrid;
     private readonly Grid _simpleHeaderGrid;
     private readonly ListBox _videosListBox;
@@ -118,6 +123,19 @@ public partial class MainWindow : Window
         _proxyModeCheckBox = this.FindControl<CheckBox>("ProxyModeCheckBox")!;
         _autostartBrowserCheckBox = this.FindControl<CheckBox>("AutostartBrowserCheckBox")!;
         _mergeTranslationCheckBox = this.FindControl<CheckBox>("MergeTranslationCheckBox")!;
+        _originalAudioVolumeNumeric = this.FindControl<NumericUpDown>("OriginalAudioVolumeNumeric")!;
+        _translatedAudioVolumeNumeric = this.FindControl<NumericUpDown>("TranslatedAudioVolumeNumeric")!;
+        UpdateCachedMainAudioVolumes();
+        _originalAudioVolumeNumeric.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == NumericUpDown.ValueProperty)
+                UpdateCachedMainAudioVolumes();
+        };
+        _translatedAudioVolumeNumeric.PropertyChanged += (_, e) =>
+        {
+            if (e.Property == NumericUpDown.ValueProperty)
+                UpdateCachedMainAudioVolumes();
+        };
         _detailedHeaderGrid = this.FindControl<Grid>("DetailedHeaderGrid")!;
         _simpleHeaderGrid = this.FindControl<Grid>("SimpleHeaderGrid")!;
         _videosListBox = this.FindControl<ListBox>("VideosListBox")!;
@@ -1080,19 +1098,19 @@ public partial class MainWindow : Window
         return job;
     }
 
-    private async Task<TranslationStudioJob> MergeTranslationStudioSegmentAsync(TranslationStudioJob job, TranslationStudioSegment segment, CancellationToken cancellationToken)
+    private async Task<TranslationStudioJob> MergeTranslationStudioSegmentAsync(TranslationStudioJob job, TranslationStudioSegment segment, double originalAudioVolumePercent, double translatedAudioVolumePercent, CancellationToken cancellationToken)
     {
         var ffmpegPath = await ToolResolver.EnsureFfmpegOnlyAsync(job.WorkspaceRoot, AppendLog, cancellationToken);
-        await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken);
+        await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
         await _translationStudioService.SaveManifestAsync(job, cancellationToken);
         RegisterTranslationStudioJob(job);
         return job;
     }
 
-    private async Task<TranslationStudioJob> BuildTranslationStudioFinalVideoAsync(TranslationStudioJob job, CancellationToken cancellationToken)
+    private async Task<TranslationStudioJob> BuildTranslationStudioFinalVideoAsync(TranslationStudioJob job, double originalAudioVolumePercent, double translatedAudioVolumePercent, CancellationToken cancellationToken)
     {
         var ffmpegPath = await ToolResolver.EnsureFfmpegOnlyAsync(job.WorkspaceRoot, AppendLog, cancellationToken);
-        await BuildTranslationStudioFinalVideoCoreAsync(job, ffmpegPath, cancellationToken);
+        await BuildTranslationStudioFinalVideoCoreAsync(job, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
         await _translationStudioService.SaveManifestAsync(job, cancellationToken);
         RegisterTranslationStudioJob(job);
         return job;
@@ -1157,8 +1175,10 @@ public partial class MainWindow : Window
             if (job.AutoMergeOnCallback)
             {
                 var ffmpegPath = await ToolResolver.EnsureFfmpegOnlyAsync(job.WorkspaceRoot, AppendLog, cancellationToken);
-                await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken);
-                await TryFinalizeTranslationStudioJobAsync(job, ffmpegPath, cancellationToken);
+                var originalAudioVolumePercent = job.OriginalAudioVolumePercent;
+                var translatedAudioVolumePercent = job.TranslatedAudioVolumePercent;
+                await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
+                await TryFinalizeTranslationStudioJobAsync(job, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
             }
 
             await _translationStudioService.SaveManifestAsync(job, cancellationToken);
@@ -1174,7 +1194,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task MergeTranslationStudioSegmentCoreAsync(TranslationStudioSegment segment, string ffmpegPath, CancellationToken cancellationToken)
+    private async Task MergeTranslationStudioSegmentCoreAsync(TranslationStudioSegment segment, string ffmpegPath, CancellationToken cancellationToken, double originalAudioVolumePercent, double translatedAudioVolumePercent)
     {
         if (!File.Exists(segment.TranslatedAudioPath))
             throw new InvalidOperationException($"Translated audio is missing for segment {segment.Index}/{segment.TotalSegments}.");
@@ -1192,12 +1212,14 @@ public partial class MainWindow : Window
             segment.TranslatedAudioPath,
             segment.MergedOutputPath,
             AppendLog,
-            cancellationToken);
+            cancellationToken,
+            originalAudioVolumePercent,
+            translatedAudioVolumePercent);
 
         AppendLog($"Translation Studio merged segment saved: {segment.MergedOutputPath}");
     }
 
-    private async Task TryFinalizeTranslationStudioJobAsync(TranslationStudioJob job, string ffmpegPath, CancellationToken cancellationToken)
+    private async Task TryFinalizeTranslationStudioJobAsync(TranslationStudioJob job, string ffmpegPath, CancellationToken cancellationToken, double originalAudioVolumePercent, double translatedAudioVolumePercent)
     {
         foreach (var segment in job.Segments.OrderBy(x => x.Index))
         {
@@ -1207,7 +1229,7 @@ public partial class MainWindow : Window
             if (!File.Exists(segment.TranslatedAudioPath))
                 continue;
 
-            await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken);
+            await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
         }
 
         var mergedSegments = job.Segments
@@ -1218,7 +1240,7 @@ public partial class MainWindow : Window
         if (job.Segments.Count == 1)
         {
             if (mergedSegments.Count == 1)
-                await BuildTranslationStudioFinalVideoCoreAsync(job, ffmpegPath, cancellationToken);
+                await BuildTranslationStudioFinalVideoCoreAsync(job, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
 
             return;
         }
@@ -1229,17 +1251,17 @@ public partial class MainWindow : Window
             return;
         }
 
-        await BuildTranslationStudioFinalVideoCoreAsync(job, ffmpegPath, cancellationToken);
+        await BuildTranslationStudioFinalVideoCoreAsync(job, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
     }
 
-    private async Task BuildTranslationStudioFinalVideoCoreAsync(TranslationStudioJob job, string ffmpegPath, CancellationToken cancellationToken)
+    private async Task BuildTranslationStudioFinalVideoCoreAsync(TranslationStudioJob job, string ffmpegPath, CancellationToken cancellationToken, double originalAudioVolumePercent, double translatedAudioVolumePercent)
     {
         if (job.Segments.Count == 0)
             throw new InvalidOperationException("Translation Studio job does not contain any segments.");
 
         if (TranslationStudioFileState.IsFinalOutputCurrent(job))
         {
-            AppendLog("Translation Studio final output already exists. Skipping build: " + job.FinalOutputPath);
+            AppendLog("Translation Studio final output already exists. Build skipped: " + job.FinalOutputPath);
             return;
         }
 
@@ -1256,8 +1278,11 @@ public partial class MainWindow : Window
                 segment.TranslatedAudioPath,
                 job.FinalOutputPath,
                 AppendLog,
-                cancellationToken);
+                cancellationToken,
+                originalAudioVolumePercent,
+                translatedAudioVolumePercent);
 
+            FfmpegService.RewriteFileWithoutAlternateStreams(job.FinalOutputPath, AppendLog);
             AppendLog("Translation Studio final video saved to: " + job.FinalOutputPath);
             return;
         }
@@ -1269,7 +1294,7 @@ public partial class MainWindow : Window
 
             if (File.Exists(segment.TranslatedAudioPath))
             {
-                await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken);
+                await MergeTranslationStudioSegmentCoreAsync(segment, ffmpegPath, cancellationToken, originalAudioVolumePercent, translatedAudioVolumePercent);
                 continue;
             }
         }
@@ -1288,6 +1313,7 @@ public partial class MainWindow : Window
             job.FinalOutputPath,
             cancellationToken);
 
+        FfmpegService.RewriteFileWithoutAlternateStreams(job.FinalOutputPath, AppendLog);
         AppendLog("Translation Studio final video saved to: " + job.FinalOutputPath);
     }
 
@@ -1359,14 +1385,14 @@ public partial class MainWindow : Window
                     return;
                 }
 
-                job = await MergeTranslationStudioSegmentAsync(job, segment, cancellationToken);
+                job = await MergeTranslationStudioSegmentAsync(job, segment, job.OriginalAudioVolumePercent, job.TranslatedAudioVolumePercent, cancellationToken);
                 await WriteJsonResponseAsync(context.Response, JsonSerializer.Serialize(job, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                 return;
             }
 
             if (path.EndsWith("/build-final", StringComparison.OrdinalIgnoreCase))
             {
-                job = await BuildTranslationStudioFinalVideoAsync(job, cancellationToken);
+                job = await BuildTranslationStudioFinalVideoAsync(job, job.OriginalAudioVolumePercent, job.TranslatedAudioVolumePercent, cancellationToken);
                 await WriteJsonResponseAsync(context.Response, JsonSerializer.Serialize(job, new JsonSerializerOptions(JsonSerializerDefaults.Web)));
                 return;
             }
@@ -1652,13 +1678,10 @@ public partial class MainWindow : Window
 
             var outputFolder = Path.Combine(folder, "merged_output");
             var outputPath = Path.Combine(outputFolder, Path.GetFileNameWithoutExtension(targetEntry.FileName) + ".translated.mp4");
-            if (autoMergeEnabled && IsUsableFile(outputPath))
+            var outputAlreadyExists = autoMergeEnabled && IsUsableFile(outputPath);
+            if (outputAlreadyExists)
             {
-                AppendLog("Merged translated video already exists. Skipping conversion: " + outputPath);
-                MarkTranslationPayloadHandled(payload);
-                SetStatus("Running");
-                SetSummary("Translated video already exists. Conversion was skipped.");
-                return;
+                AppendLog("Merged translated video already exists. Auto merge skipped: " + outputPath);
             }
 
             var storedAudioPath = BuildStoredTranslatedAudioPath(folder, targetEntry.FileName, payload.SuggestedFileName ?? payload.Url);
@@ -1684,13 +1707,25 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (outputAlreadyExists)
+            {
+                SetStatus("Running");
+                SetSummary("Translated video already exists. Auto merge skipped.");
+                return;
+            }
+
+            var originalAudioVolumePercent = GetOriginalAudioVolumePercent();
+            var translatedAudioVolumePercent = GetTranslatedAudioVolumePercent();
+
             await _ffmpegService.MergeVideoWithExternalAudioAsync(
                 tools.FfmpegPath,
                 targetEntry.FullPath,
                 storedAudioPath,
                 outputPath,
                 AppendLog,
-                cancellationToken);
+                cancellationToken,
+                originalAudioVolumePercent,
+                translatedAudioVolumePercent);
 
             AppendLog("Merged translated video saved to: " + outputPath);
             SetStatus("Running");
@@ -1702,6 +1737,16 @@ public partial class MainWindow : Window
             _autoMergeSemaphore.Release();
         }
     }
+
+    private void UpdateCachedMainAudioVolumes()
+    {
+        _originalAudioVolumePercent = Convert.ToDouble(_originalAudioVolumeNumeric.Value ?? 8, CultureInfo.InvariantCulture);
+        _translatedAudioVolumePercent = Convert.ToDouble(_translatedAudioVolumeNumeric.Value ?? 100, CultureInfo.InvariantCulture);
+    }
+
+    private double GetOriginalAudioVolumePercent() => _originalAudioVolumePercent;
+
+    private double GetTranslatedAudioVolumePercent() => _translatedAudioVolumePercent;
 
     private void MarkTranslationPayloadHandled(TranslationCallbackPayload payload)
     {
@@ -1820,7 +1865,7 @@ public partial class MainWindow : Window
         var extension = GetTranslatedAudioExtension(translatedAudioSource);
         var baseName = Path.GetFileNameWithoutExtension(videoFileName);
         var outputFolder = Path.Combine(rootFolder, "translated_audio");
-        return Path.Combine(outputFolder, baseName + ".translated" + extension);
+        return Path.Combine(outputFolder, baseName + extension);
     }
 
     private static string GetTranslatedAudioExtension(string translatedAudioSource)
