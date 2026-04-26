@@ -44,29 +44,29 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "create_release=$CREATE_RELEASE" >> "$GITHUB_OUTPUT"
 
-create-release:
-  needs: resolve-version
-  if: needs.resolve-version.outputs.create_release == 'true'
-  runs-on: ubuntu-latest
-  steps:
-    - uses: actions/checkout@v5
+  create-release:
+    needs: resolve-version
+    if: needs.resolve-version.outputs.create_release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
 
-    - name: Create or update GitHub release
-      shell: bash
-      run: |
-        gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || \
-          gh release create "${TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "PublicVideoLauncher ${VERSION}" \
-            --generate-notes
-      env:
-        GH_TOKEN: ${{ github.token }}
-        TAG: ${{ needs.resolve-version.outputs.tag }}
-        VERSION: ${{ needs.resolve-version.outputs.version }}
+      - name: Create or update GitHub release
+        shell: bash
+        run: |
+          gh release view "${TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1 || \
+            gh release create "${TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --title "PublicVideoLauncher ${VERSION}" \
+              --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.resolve-version.outputs.tag }}
+          VERSION: ${{ needs.resolve-version.outputs.version }}
 
   build:
-    needs: [resolve-version]
-    if: needs.resolve-version.result == 'success'
+    needs: [resolve-version, create-release]
+    if: always() && needs.resolve-version.result == 'success'
     strategy:
       fail-fast: false
       matrix:
