@@ -149,12 +149,22 @@ public sealed class TranslationStudioService
 
     public string BuildPublicPlayerUrl(string publicBaseUrl, TranslationStudioJob job)
     {
-        return BuildPublicPlayerUrl(publicBaseUrl, job, null);
+        return BuildPublicPlayerUrl(publicBaseUrl, job, null, null, null);
     }
 
     public string BuildPublicPlayerUrl(string publicBaseUrl, TranslationStudioJob job, TranslationStudioSegment? segment)
     {
-        var playerPath = BuildPlayerRelativeUrl(job, segment);
+        return BuildPublicPlayerUrl(publicBaseUrl, job, segment, null, null);
+    }
+
+    public string BuildPublicPlayerUrl(
+        string publicBaseUrl,
+        TranslationStudioJob job,
+        TranslationStudioSegment? segment,
+        string? queueSessionId,
+        string? queueEntryId)
+    {
+        var playerPath = BuildPlayerRelativeUrl(job, segment, queueSessionId, queueEntryId);
         return publicBaseUrl.TrimEnd('/') + AppendCacheBuster(playerPath);
     }
 
@@ -191,13 +201,21 @@ public sealed class TranslationStudioService
 
     public static string GetManifestPath(string jobFolder) => Path.Combine(jobFolder, "job-manifest.json");
 
-    private static string BuildPlayerRelativeUrl(TranslationStudioJob job, TranslationStudioSegment? segment)
+    private static string BuildPlayerRelativeUrl(
+        TranslationStudioJob job,
+        TranslationStudioSegment? segment,
+        string? queueSessionId,
+        string? queueEntryId)
     {
         var playlistRelativeUrl = job.PlaylistRelativeUrl;
         var playerRelativeUrl = "/" + string.Join("/", job.PlaylistRelativeUrl.TrimStart('/').Split('/').SkipLast(1)) + "/player.html";
         var url = $"{playerRelativeUrl}?list={Uri.EscapeDataString(playlistRelativeUrl)}";
         if (segment is not null && !string.IsNullOrWhiteSpace(segment.PayloadRelativeUrl))
             url += "&src=" + Uri.EscapeDataString(segment.PayloadRelativeUrl);
+        if (!string.IsNullOrWhiteSpace(queueEntryId))
+            url += "&queueEntryId=" + Uri.EscapeDataString(queueEntryId);
+        if (!string.IsNullOrWhiteSpace(queueSessionId))
+            url += "&queueSessionId=" + Uri.EscapeDataString(queueSessionId);
 
         return url;
     }
@@ -209,7 +227,7 @@ public sealed class TranslationStudioService
             job.PlayerRelativeUrl.Contains("&src=", StringComparison.OrdinalIgnoreCase) ||
             job.PlayerRelativeUrl.Contains("?src=", StringComparison.OrdinalIgnoreCase))
         {
-            return BuildPlayerRelativeUrl(job, null);
+            return BuildPlayerRelativeUrl(job, null, null, null);
         }
 
         return job.PlayerRelativeUrl;

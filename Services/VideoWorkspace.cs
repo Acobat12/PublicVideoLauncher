@@ -146,34 +146,15 @@ public sealed class VideoWorkspace
     {
         var ext = Path.GetExtension(filePath);
 
-        // “олько честные mp4-контейнеры можно вообще рассматривать как direct play.
         if (!DirectPlayExtensions.Contains(ext))
             return false;
 
-        // ћинимальна€ защита уже на этом уровне:
-        // если файл начинаетс€ не с ftyp, скорее всего это не насто€щий mp4.
-        // ƒл€ "ложных .mp4" с MPEG-TS это сразу даст false.
-        try
-        {
-            using var stream = File.OpenRead(filePath);
-            if (stream.Length < 12)
-                return false;
-
-            Span<byte> header = stackalloc byte[12];
-            var read = stream.Read(header);
-            if (read < 12)
-                return false;
-
-            // MP4 обычно содержит box: [size][ftyp]
-            return header[4] == (byte)'f'
-                && header[5] == (byte)'t'
-                && header[6] == (byte)'y'
-                && header[7] == (byte)'p';
-        }
-        catch
-        {
-            return false;
-        }
+        // Do not trust the .mp4 extension alone. Firefox may reject HEVC/H.265 MP4
+        // even when Chrome/Edge can play it through Windows codecs.
+        // Returning false forces ffprobe/ffmpeg cache normalization before publishing.
+        // Safe H.264/AAC MP4 files are usually just remuxed with +faststart; HEVC is
+        // transcoded to H.264/AAC, which works in Firefox.
+        return false;
     }
 
     private static string GetInitialCacheState(

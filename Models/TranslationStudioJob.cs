@@ -89,3 +89,12 @@ public sealed class TranslationStudioPrepareRequest
     public double OriginalAudioVolumePercent { get; init; } = 8;
     public double TranslatedAudioVolumePercent { get; init; } = 100;
 }
+
+public sealed class TranslationStudioBatchRequest
+{
+    public bool SplitLongVideo { get; init; }
+    public int SplitIfLongerThanMinutes { get; init; }
+    public int TargetSegmentMinutes { get; init; }
+    public double OriginalAudioVolumePercent { get; init; } = 8;
+    public double TranslatedAudioVolumePercent { get; init; } = 100;
+}

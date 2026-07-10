@@ -36,6 +36,7 @@ public sealed class VideoWorkspaceTests
             Assert.Equal("/.public-video-cache/clip-1-mkv.play.mp4", entry.PlaybackUrl);
             Assert.Equal("/.public-video-cache/clip-1-mkv.proxy.mp4", entry.TranslationUrl);
             Assert.Equal("Pending", entry.CacheState);
+            Assert.True(entry.IncludeInBatch);
         }
         finally
         {

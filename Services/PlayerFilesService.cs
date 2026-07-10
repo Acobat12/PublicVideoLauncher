@@ -619,7 +619,12 @@ public sealed class PlayerFilesService
   <script>
     (function installTranslationAutoDownloadHook() {
       const seenTranslationDownloads = new Set();
+      const startedTranslationKeys = new Set();
+      const failedTranslationKeys = new Set();
       const translationCallbackUrl = __PVL_CALLBACK_URL__ || "/translation-ready";
+      const translationReadyCallbackUrl = buildCallbackUrl("translation-ready");
+      const translationStartedCallbackUrl = buildCallbackUrl("translation-started");
+      const translationFailedCallbackUrl = buildCallbackUrl("translation-failed");
       window.__PVL_LAST_TRANSLATED_SUBTITLES_URL = null;
       const originalConsoleLog = console.log.bind(console);
       const originalConsoleDebug = console.debug ? console.debug.bind(console) : null;
@@ -631,6 +636,22 @@ public sealed class PlayerFilesService
       const mediaProto = window.HTMLMediaElement && window.HTMLMediaElement.prototype;
       const mediaSrcDescriptor = mediaProto ? Object.getOwnPropertyDescriptor(mediaProto, "src") : null;
       const originalSetAttribute = Element.prototype.setAttribute;
+
+      function buildCallbackUrl(endpointName) {
+        const base = translationCallbackUrl || "/translation-ready";
+        try {
+          const url = new URL(base, window.location.href);
+          const trimmedPath = (url.pathname || "/").replace(/\/+$/, "");
+          const slashIndex = trimmedPath.lastIndexOf("/");
+          const prefix = slashIndex >= 0 ? trimmedPath.slice(0, slashIndex + 1) : "/";
+          url.pathname = prefix + endpointName;
+          url.search = "";
+          url.hash = "";
+          return url.toString();
+        } catch {
+          return "/" + endpointName;
+        }
+      }
 
       function extractFirstUrl(value) {
         if (!value) return null;
@@ -646,6 +667,115 @@ public sealed class PlayerFilesService
           || normalized.includes("/tts/")
           || normalized.includes("translation") && /\.(mp3|m4a|aac|wav|ogg)(?:$|[?#])/i.test(normalized)
           || /\.(mp3|m4a|aac|wav|ogg)(?:$|[?#])/i.test(normalized) && normalized.includes("x-amz-signature");
+      }
+
+      function isTranslationStartRequestUrl(url) {
+        if (!url) return false;
+        const normalized = String(url).toLowerCase();
+        if (!/^https?:\/\//.test(normalized)) return false;
+        if (isTranslationAudioUrl(normalized)) return false;
+        if (/\.(mp3|m4a|aac|wav|ogg|vtt|srt)(?:$|[?#])/i.test(normalized)) return false;
+        return normalized.includes("video-translation")
+          || normalized.includes("/translate")
+          || (normalized.includes("translation")
+            && (normalized.includes("request")
+              || normalized.includes("status")
+              || normalized.includes("result")));
+      }
+
+      function getMessageFragments(args) {
+        const fragments = [];
+        for (const arg of args) {
+          if (typeof arg === "string" && arg.trim()) {
+            fragments.push(arg.trim());
+            continue;
+          }
+
+          if (arg && typeof arg === "object") {
+            const candidates = [arg.errorMessage, arg.message, arg.error, arg.reason, arg.statusText, arg.type, arg.state];
+            for (const candidate of candidates) {
+              if (typeof candidate === "string" && candidate.trim()) {
+                fragments.push(candidate.trim());
+              }
+            }
+          }
+        }
+
+        return fragments;
+      }
+
+      function extractTranslationStarted(args) {
+        const joined = getMessageFragments(args).join(" ").toLowerCase();
+        if (!joined) return false;
+        return joined.includes("translation started")
+          || joined.includes("starting translation")
+          || joined.includes("start translation")
+          || joined.includes("requesting translation")
+          || joined.includes("request translation")
+          || joined.includes("translation request started");
+      }
+
+      function inferTranslationErrorCode(message) {
+        const normalized = String(message || "").toLowerCase();
+        if (normalized.includes("try again later")) return "try-again-later";
+        if (normalized.includes("too many requests") || normalized.includes("rate limit")) return "rate-limited";
+        if (normalized.includes("not available")) return "translation-unavailable";
+        return "translation-failed";
+      }
+
+      function extractTranslationFailure(args) {
+        let explicitCode = null;
+        const fragments = [];
+
+        for (const arg of args) {
+          if (typeof arg === "string" && arg.trim()) {
+            fragments.push(arg.trim());
+            continue;
+          }
+
+          if (arg && typeof arg === "object") {
+            const codeCandidates = [arg.errorCode, arg.code, arg.status];
+            for (const candidate of codeCandidates) {
+              if ((typeof candidate === "string" || typeof candidate === "number") && String(candidate).trim()) {
+                explicitCode = String(candidate).trim();
+                break;
+              }
+            }
+
+            const messageCandidates = [arg.errorMessage, arg.message, arg.error, arg.reason, arg.statusText];
+            for (const candidate of messageCandidates) {
+              if (typeof candidate === "string" && candidate.trim()) {
+                fragments.push(candidate.trim());
+              }
+            }
+          }
+        }
+
+        const joined = fragments.join(" | ");
+        const lowered = joined.toLowerCase();
+        if (!lowered || lowered.includes("afterupdatetranslation downloadtranslationurl")) {
+          return null;
+        }
+
+        const isFailure =
+          lowered.includes("translation failed")
+          || lowered.includes("failed to translate")
+          || lowered.includes("failed to get translation")
+          || lowered.includes("could not get translation")
+          || lowered.includes("translation error")
+          || lowered.includes("try again later")
+          || lowered.includes("too many requests")
+          || lowered.includes("rate limit")
+          || lowered.includes("translation unavailable");
+
+        if (!isFailure) {
+          return null;
+        }
+
+        return {
+          errorCode: explicitCode || inferTranslationErrorCode(joined),
+          errorMessage: joined
+        };
       }
 
       function extractTranslationUrl(args) {
@@ -697,23 +827,44 @@ public sealed class PlayerFilesService
         return fileName.replace(/\.[^.]+$/i, "");
       }
 
-      function buildPayload(url, subtitlesUrl) {
+      function getPreferredVideoSrc() {
         const currentVideo = document.getElementById("video");
-        const preferredSrc =
-          window.__PVL_VOT_SRC ||
-          (currentVideo && currentVideo.dataset ? currentVideo.dataset.votSrc : "") ||
-          (currentVideo && (currentVideo.currentSrc || currentVideo.getAttribute("src"))) ||
-          "";
+        return window.__PVL_VOT_SRC
+          || (currentVideo && currentVideo.dataset ? currentVideo.dataset.votSrc : "")
+          || (currentVideo && (currentVideo.currentSrc || currentVideo.getAttribute("src")))
+          || "";
+      }
+
+      function getCurrentVideoKey() {
+        return String(getPreferredVideoSrc() || window.location.href || "video").toLowerCase();
+      }
+
+      function getQueueEntryId() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get("queueEntryId") || null;
+      }
+
+      function getQueueSessionId() {
+        const params = new URLSearchParams(window.location.search);
+        return params.get("queueSessionId") || null;
+      }
+
+      function buildPayload(url, subtitlesUrl, errorCode, errorMessage) {
+        const preferredSrc = getPreferredVideoSrc();
 
         const baseName = sanitizeFileName(getCurrentVideoName());
 
         return {
-          url,
+          url: url || "",
+          entryId: getQueueEntryId(),
+          sessionId: getQueueSessionId(),
           videoSrc: preferredSrc,
           videoTitle: getCurrentVideoName(),
           suggestedFileName: baseName + ".translated.mp3",
           subtitlesUrl: subtitlesUrl || null,
-          suggestedSubtitlesFileName: subtitlesUrl ? (baseName + ".translated.vtt") : null
+          suggestedSubtitlesFileName: subtitlesUrl ? (baseName + ".translated.vtt") : null,
+          errorCode: errorCode || null,
+          errorMessage: errorMessage || null
         };
       }
 
@@ -747,22 +898,80 @@ public sealed class PlayerFilesService
         });
       }
 
-      async function notifyApp(url, source) {
-        if (!translationCallbackUrl || !isTranslationAudioUrl(url)) {
+      async function notifyTranslationStarted(source) {
+        const videoKey = getCurrentVideoKey();
+        if (!translationStartedCallbackUrl || !videoKey) {
           return false;
         }
 
+        if (startedTranslationKeys.has(videoKey)) {
+          return true;
+        }
+
+        startedTranslationKeys.add(videoKey);
+
         try {
-          const payload = buildPayload(url, window.__PVL_LAST_TRANSLATED_SUBTITLES_URL || null);
-          const response = await postJson(translationCallbackUrl, payload);
+          const payload = buildPayload("", window.__PVL_LAST_TRANSLATED_SUBTITLES_URL || null, null, null);
+          const response = await postJson(translationStartedCallbackUrl, payload);
           if (!response.ok) {
             throw new Error("callback status " + response.status);
           }
 
-          originalConsoleLog("[PVL] Translation URL forwarded to app", source || "unknown", payload.videoTitle, url);
+          originalConsoleLog("[PVL] Translation started forwarded to app", source || "unknown", payload.videoTitle);
           return true;
         } catch (err) {
-          originalConsoleLog("[PVL] Direct app handoff failed", source || "unknown", err);
+          startedTranslationKeys.delete(videoKey);
+          originalConsoleLog("[PVL] Translation started callback failed", source || "unknown", err);
+          return false;
+        }
+      }
+
+      async function notifyTranslationFailed(errorCode, errorMessage, source) {
+        const videoKey = getCurrentVideoKey();
+        if (!translationFailedCallbackUrl || !videoKey) {
+          return false;
+        }
+
+        if (failedTranslationKeys.has(videoKey)) {
+          return true;
+        }
+
+        failedTranslationKeys.add(videoKey);
+
+        try {
+          const payload = buildPayload("", window.__PVL_LAST_TRANSLATED_SUBTITLES_URL || null, errorCode, errorMessage);
+          const response = await postJson(translationFailedCallbackUrl, payload);
+          if (!response.ok) {
+            throw new Error("callback status " + response.status);
+          }
+
+          originalConsoleLog("[PVL] Translation failure forwarded to app", source || "unknown", payload.videoTitle, payload.errorCode, payload.errorMessage);
+          return true;
+        } catch (err) {
+          failedTranslationKeys.delete(videoKey);
+          originalConsoleLog("[PVL] Translation failed callback failed", source || "unknown", err);
+          return false;
+        }
+      }
+
+      async function notifyTranslationReady(url, source) {
+        if (!translationReadyCallbackUrl || !isTranslationAudioUrl(url)) {
+          return false;
+        }
+
+        await notifyTranslationStarted(source || "ready");
+
+        try {
+          const payload = buildPayload(url, window.__PVL_LAST_TRANSLATED_SUBTITLES_URL || null, null, null);
+          const response = await postJson(translationReadyCallbackUrl, payload);
+          if (!response.ok) {
+            throw new Error("callback status " + response.status);
+          }
+
+          originalConsoleLog("[PVL] Translation ready forwarded to app", source || "unknown", payload.videoTitle, url);
+          return true;
+        } catch (err) {
+          originalConsoleLog("[PVL] Translation ready callback failed", source || "unknown", err);
           return false;
         }
       }
@@ -774,7 +983,7 @@ public sealed class PlayerFilesService
 
         seenTranslationDownloads.add(url);
         window.setTimeout(async () => {
-          const handedOff = await notifyApp(url, source);
+          const handedOff = await notifyTranslationReady(url, source);
           if (!handedOff) {
             originalConsoleLog("[PVL] Translation URL was detected but could not be handed off to the app; browser auto-open fallback is disabled", source || "unknown", url);
           }
@@ -782,6 +991,15 @@ public sealed class PlayerFilesService
       }
 
       function inspectConsoleArgs(args) {
+        if (extractTranslationStarted(args)) {
+          void notifyTranslationStarted("console");
+        }
+
+        const failure = extractTranslationFailure(args);
+        if (failure) {
+          void notifyTranslationFailed(failure.errorCode, failure.errorMessage, "console");
+        }
+
         const url = extractTranslationUrl(args);
         if (url) {
           handleTranslationUrl(url, "console");
@@ -810,23 +1028,47 @@ public sealed class PlayerFilesService
       if (originalFetch) {
         window.fetch = async (...args) => {
           const candidateUrl = typeof args[0] === "string" ? args[0] : args[0] && args[0].url;
+          const isStartRequest = isTranslationStartRequestUrl(candidateUrl);
+          if (isStartRequest) {
+            void notifyTranslationStarted("fetch-request");
+          }
           if (isTranslationAudioUrl(candidateUrl)) {
             handleTranslationUrl(candidateUrl, "fetch-request");
           }
-          const response = await originalFetch(...args);
           try {
-            const finalUrl = response && response.url;
-            if (isTranslationAudioUrl(finalUrl)) {
-              handleTranslationUrl(finalUrl, "fetch-response");
+            const response = await originalFetch(...args);
+            try {
+              const finalUrl = response && response.url;
+              if (isTranslationAudioUrl(finalUrl)) {
+                handleTranslationUrl(finalUrl, "fetch-response");
+              }
+
+              if (isStartRequest && response && !response.ok) {
+                void notifyTranslationFailed(
+                  "translation-request-failed",
+                  "Translation request failed with status " + response.status + ".",
+                  "fetch-response");
+              }
+            } catch {}
+            return response;
+          } catch (err) {
+            if (isStartRequest) {
+              const message = err && err.message
+                ? "Translation request failed: " + err.message
+                : "Translation request failed due to a network error.";
+              void notifyTranslationFailed("translation-request-error", message, "fetch-error");
             }
-          } catch {}
-          return response;
+            throw err;
+          }
         };
       }
 
       if (originalOpen && originalSend && OriginalXMLHttpRequest) {
         OriginalXMLHttpRequest.prototype.open = function(method, url) {
           this.__pvlUrl = url;
+          if (isTranslationStartRequestUrl(url)) {
+            void notifyTranslationStarted("xhr-open");
+          }
           if (isTranslationAudioUrl(url)) {
             handleTranslationUrl(url, "xhr-open");
           }
@@ -840,6 +1082,21 @@ public sealed class PlayerFilesService
               if (isTranslationAudioUrl(responseUrl)) {
                 handleTranslationUrl(responseUrl, "xhr-response");
               }
+              if (this.readyState === 4 && isTranslationStartRequestUrl(responseUrl) && this.status >= 400) {
+                void notifyTranslationFailed(
+                  "translation-request-failed",
+                  "Translation request failed with status " + this.status + ".",
+                  "xhr-response");
+              }
+            }
+          });
+          this.addEventListener("error", function() {
+            const responseUrl = this.responseURL || this.__pvlUrl;
+            if (isTranslationStartRequestUrl(responseUrl)) {
+              void notifyTranslationFailed(
+                "translation-request-error",
+                "Translation request failed due to a network error.",
+                "xhr-error");
             }
           });
           return originalSend.apply(this, arguments);

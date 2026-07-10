@@ -8,6 +8,7 @@ namespace PublicVideoLauncher.Models;
 public sealed class VideoEntry : INotifyPropertyChanged
 {
     private string _cacheState = "Pending";
+    private bool _includeInBatch = true;
 
     public string Id { get; set; } = string.Empty;
     public string Title { get; set; } = string.Empty;
@@ -38,9 +39,9 @@ public sealed class VideoEntry : INotifyPropertyChanged
     public bool ShowProxyColumns => ProxyModeEnabled;
     public bool ShowSimpleColumns => !ProxyModeEnabled;
 
-    public string PlaybackKind => IsDirectMp4
-        ? "Direct MP4"
-        : (UsesAnyCache ? "Playable cache MP4" : "Original file");
+    public string PlaybackKind => !string.IsNullOrWhiteSpace(PlaybackCachePath)
+        ? "Playable cache MP4"
+        : (IsDirectMp4 ? "Direct MP4" : "Original file");
 
     public string TranslationKind => UsesProxyForTranslation
         ? "Audio proxy MP4"
@@ -50,6 +51,12 @@ public sealed class VideoEntry : INotifyPropertyChanged
     {
         get => _cacheState;
         set => SetField(ref _cacheState, value);
+    }
+
+    public bool IncludeInBatch
+    {
+        get => _includeInBatch;
+        set => SetField(ref _includeInBatch, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

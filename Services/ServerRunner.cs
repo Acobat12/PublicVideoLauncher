@@ -219,7 +219,7 @@ public sealed class ServerRunner
             "}",
             $":{port} {{",
             $"  root * \"{escapedRoot}\"",
-            "  @translation path /translation-ready",
+            "  @translation path /translation-started /translation-ready /translation-failed",
             "  @dynamicFiles path_regexp dynamicFiles (?i).*(?:\\.html|\\.json)$",
             translationCallbackPort is int callbackPort
                 ? $"  reverse_proxy @translation 127.0.0.1:{callbackPort}"

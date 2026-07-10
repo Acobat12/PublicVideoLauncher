@@ -87,4 +87,36 @@ public sealed class PlayerFilesServiceTests
             if (Directory.Exists(root)) Directory.Delete(root, true);
         }
     }
+
+    [Fact]
+    public async Task WritePlayerPageAsync_EmbedsExtendedTranslationCallbackProtocol()
+    {
+        var root = Path.Combine(Path.GetTempPath(), "pvl-player-callback-tests-" + Path.GetRandomFileName());
+        Directory.CreateDirectory(root);
+        try
+        {
+            var service = new PlayerFilesService();
+            await service.WritePlayerPageAsync(
+                root,
+                "player.html",
+                "/translation-ready",
+                "Local Video Player",
+                TestContext.Current.CancellationToken);
+
+            var html = await File.ReadAllTextAsync(Path.Combine(root, "player.html"), TestContext.Current.CancellationToken);
+            Assert.Contains("buildCallbackUrl(\"translation-started\")", html);
+            Assert.Contains("buildCallbackUrl(\"translation-ready\")", html);
+            Assert.Contains("buildCallbackUrl(\"translation-failed\")", html);
+            Assert.Contains("function getQueueEntryId()", html);
+            Assert.Contains("function getQueueSessionId()", html);
+            Assert.Contains("entryId: getQueueEntryId()", html);
+            Assert.Contains("sessionId: getQueueSessionId()", html);
+            Assert.Contains("errorCode: errorCode || null", html);
+            Assert.Contains("errorMessage: errorMessage || null", html);
+        }
+        finally
+        {
+            if (Directory.Exists(root)) Directory.Delete(root, true);
+        }
+    }
 }

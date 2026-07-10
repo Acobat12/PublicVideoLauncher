@@ -10,6 +10,7 @@ using System;
 using System.Collections.Generic;
 using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Globalization;
 using System.Diagnostics;
 using System.IO;
@@ -42,6 +43,11 @@ public partial class MainWindow : Window
     private readonly CheckBox _proxyModeCheckBox;
     private readonly CheckBox _autostartBrowserCheckBox;
     private readonly CheckBox _mergeTranslationCheckBox;
+    private readonly CheckBox _autoProcessNextVideoCheckBox;
+    private readonly Button _retryFailedButton;
+    private readonly Button _selectAllButton;
+    private readonly Button _unselectAllButton;
+    private readonly Button _invertSelectionButton;
     private readonly NumericUpDown _originalAudioVolumeNumeric;
     private readonly NumericUpDown _translatedAudioVolumeNumeric;
     private double _originalAudioVolumePercent = 8;
@@ -56,6 +62,7 @@ public partial class MainWindow : Window
     private readonly ComboBox _languageComboBox;
     private readonly TextBlock _statusTextBlock;
     private readonly TextBlock _summaryTextBlock;
+    private readonly TextBlock _selectionSummaryTextBlock;
     private readonly TextBlock _busyTextBlock;
     private readonly ProgressBar _busyProgressBar;
 
@@ -65,6 +72,8 @@ public partial class MainWindow : Window
     private readonly PlayerFilesService _playerFilesService = new();
     private readonly ServerRunner _serverRunner = new();
     private readonly TranslationStudioService _translationStudioService = new();
+    private readonly VideoProcessingQueueRunner _mainModeQueueRunner = new();
+    private readonly VideoProcessingQueueRunner _studioQueueRunner = new();
 
     private readonly SemaphoreSlim _autoMergeSemaphore = new(1, 1);
     private readonly ConcurrentDictionary<string, DateTime> _autoMergeEventTimes = new(StringComparer.OrdinalIgnoreCase);
@@ -83,11 +92,23 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _translationCallbackCts;
     private HttpListener? _translationCallbackListener;
     private Task? _translationCallbackLoopTask;
+    private Task? _mainModeQueueTask;
+    private Task? _studioQueueTask;
+    private MainModeQueueAdapter? _mainModeQueueAdapter;
+    private StudioModeQueueAdapter? _studioQueueAdapter;
+    private TranslationStudioWindow? _translationStudioWindow;
     private string? _translationCallbackUrl;
     private string? _publicUrl;
     private string? _lastAutoMergedAudioPath;
     private DateTime _lastAutoMergedAtUtc;
     private AppLanguage _uiLanguage = AppLanguage.English;
+    private bool _isBusy;
+    private bool _isMainModeQueueLocked;
+    private string? _queueProgressText;
+    private string? _studioQueueStartedEntryId;
+    private string? _studioQueueReadyEntryId;
+    private VideoProcessingQueueReport? _lastQueueReport;
+    private TranslationStudioBatchRequest? _lastStudioBatchRequest;
     private TunnelLaunchSettings _loadedTunnelSettings = new();
     private readonly TunnelProviderOption[] _tunnelProviders =
     [
@@ -123,6 +144,11 @@ public partial class MainWindow : Window
         _proxyModeCheckBox = this.FindControl<CheckBox>("ProxyModeCheckBox")!;
         _autostartBrowserCheckBox = this.FindControl<CheckBox>("AutostartBrowserCheckBox")!;
         _mergeTranslationCheckBox = this.FindControl<CheckBox>("MergeTranslationCheckBox")!;
+        _autoProcessNextVideoCheckBox = this.FindControl<CheckBox>("AutoProcessNextVideoCheckBox")!;
+        _retryFailedButton = this.FindControl<Button>("RetryFailedButton")!;
+        _selectAllButton = this.FindControl<Button>("SelectAllButton")!;
+        _unselectAllButton = this.FindControl<Button>("UnselectAllButton")!;
+        _invertSelectionButton = this.FindControl<Button>("InvertSelectionButton")!;
         _originalAudioVolumeNumeric = this.FindControl<NumericUpDown>("OriginalAudioVolumeNumeric")!;
         _translatedAudioVolumeNumeric = this.FindControl<NumericUpDown>("TranslatedAudioVolumeNumeric")!;
         UpdateCachedMainAudioVolumes();
@@ -146,6 +172,7 @@ public partial class MainWindow : Window
         _languageComboBox = this.FindControl<ComboBox>("LanguageComboBox")!;
         _statusTextBlock = this.FindControl<TextBlock>("StatusTextBlock")!;
         _summaryTextBlock = this.FindControl<TextBlock>("SummaryTextBlock")!;
+        _selectionSummaryTextBlock = this.FindControl<TextBlock>("SelectionSummaryTextBlock")!;
         _busyTextBlock = this.FindControl<TextBlock>("BusyTextBlock")!;
         _busyProgressBar = this.FindControl<ProgressBar>("BusyProgressBar")!;
 
@@ -173,13 +200,36 @@ public partial class MainWindow : Window
         _fixDnsButton.Click += FixDnsButton_OnClick;
         _dependenciesButton.Click += DependenciesButton_OnClick;
         _tunnelSetupButton.Click += TunnelSetupButton_OnClick;
+        _retryFailedButton.Click += RetryFailedButton_OnClick;
+        _selectAllButton.Click += SelectAllButton_OnClick;
+        _unselectAllButton.Click += UnselectAllButton_OnClick;
+        _invertSelectionButton.Click += InvertSelectionButton_OnClick;
         _tunnelProviderComboBox.SelectionChanged += TunnelProviderComboBox_OnSelectionChanged;
         _languageComboBox.SelectionChanged += LanguageComboBox_OnSelectionChanged;
         _mergeTranslationCheckBox.IsCheckedChanged += MergeTranslationCheckBox_OnChanged;
         Closing += MainWindow_Closing;
 
         SetBusy(false);
+        RefreshSelectionSummary();
         ApplyUiLanguage();
+    }
+
+    private void SelectAllButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        BatchSelectionHelper.SelectAll(_workspace.Entries);
+        RefreshSelectionSummary();
+    }
+
+    private void UnselectAllButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        BatchSelectionHelper.UnselectAll(_workspace.Entries);
+        RefreshSelectionSummary();
+    }
+
+    private void InvertSelectionButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        BatchSelectionHelper.InvertSelection(_workspace.Entries);
+        RefreshSelectionSummary();
     }
 
     private void LanguageComboBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
@@ -199,6 +249,9 @@ public partial class MainWindow : Window
     }
 
     private string T(string text) => UiLocalizer.Translate(text, _uiLanguage);
+
+    private string F(string format, params object[] args) =>
+        string.Format(CultureInfo.CurrentCulture, T(format), args);
 
     private TunnelLaunchSettings CollectTunnelSettings() => new()
     {
@@ -457,14 +510,29 @@ public partial class MainWindow : Window
             GetPublicBaseUrl() ?? string.Empty,
             PrepareTranslationStudioJobAsync,
             LoadExistingTranslationStudioJobAsync,
-            OpenTranslationStudioPlayerAsync,
+            (job, segment, token) => OpenTranslationStudioPlayerAsync(job, segment, token),
             ImportTranslationStudioAudioAsync,
             MergeTranslationStudioSegmentAsync,
             BuildTranslationStudioFinalVideoAsync,
             SaveTranslationStudioJobAsync,
+            StartTranslationStudioBatchAsync,
+            StopTranslationStudioBatchAsync,
+            RetryFailedAsync,
+            CanRetryFailedLastBatch,
+            IsAutoProcessNextVideoEnabled,
+            SetAutoProcessNextVideoEnabled,
             _uiLanguage);
 
-        await window.ShowDialog(this);
+        _translationStudioWindow = window;
+        _translationStudioWindow.SetBatchLocked(false);
+        try
+        {
+            await window.ShowDialog(this);
+        }
+        finally
+        {
+            _translationStudioWindow = null;
+        }
     }
 
     private async void MainWindow_Closing(object? sender, WindowClosingEventArgs e)
@@ -510,6 +578,12 @@ public partial class MainWindow : Window
 
     private async Task ScanAsync()
     {
+        if (_isMainModeQueueLocked)
+        {
+            AppendLog("Scan skipped: main mode batch processing is active.");
+            return;
+        }
+
         var folder = (_folderTextBox.Text ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
         {
@@ -521,6 +595,7 @@ public partial class MainWindow : Window
         try
         {
             _workspace.Load(folder, _proxyModeCheckBox.IsChecked == true);
+            ClearLastQueueState();
             RenderVideos();
 
             AppendLog("Workspace loaded: " + folder);
@@ -591,6 +666,7 @@ public partial class MainWindow : Window
         SetBusy(true, "Starting services...");
         try
         {
+            var autoProcessNextVideoEnabled = IsAutoProcessNextVideoEnabled();
             var requiredToolNames = ToolResolver.GetRequiredToolNames(GetSelectedTunnelProvider().Key);
             var toolStatusesBeforeStart = ToolResolver.InspectAll(folder)
                 .Where(x => requiredToolNames.Contains(x.Name, StringComparer.OrdinalIgnoreCase))
@@ -640,7 +716,7 @@ public partial class MainWindow : Window
 
             AppendLog("Starting local server and tunnel...");
             var preferredPort = (int)(_portNumeric.Value ?? 8000m);
-            var selectedEntry = _videosListBox.SelectedItem as VideoEntry;
+            var selectedEntry = GetPreferredMainModeStartEntry(autoProcessNextVideoEnabled);
             if (selectedEntry is not null)
             {
                 AppendLog("Selected start video: " + selectedEntry.FileName);
@@ -672,7 +748,12 @@ public partial class MainWindow : Window
             SetStatus("Running");
             SetSummary($"Local: {session.LocalUrl} | {selectedTunnel.DisplayName} is ready.");
 
-            if (_autostartBrowserCheckBox.IsChecked == true)
+            if (autoProcessNextVideoEnabled)
+            {
+                AppendLog("Auto process next video is enabled. Starting sequential main mode queue.");
+                StartMainModeQueue();
+            }
+            else if (_autostartBrowserCheckBox.IsChecked == true)
             {
                 AppendLog("Tunnel URL detected and autostart is enabled.");
                 AppendLog("Waiting for DNS propagation...");
@@ -735,31 +816,82 @@ public partial class MainWindow : Window
 
     private async Task StopAsync()
     {
+        SetBusy(true, "Stopping...");
+
+        Task? mainModeQueueTask = null;
+        Task? studioQueueTask = null;
         try
         {
+            mainModeQueueTask = _mainModeQueueTask;
+            studioQueueTask = _studioQueueTask;
+
+            if (_mainModeQueueRunner.IsRunning)
+                await _mainModeQueueRunner.RequestStopAsync();
+            if (_studioQueueRunner.IsRunning)
+                await _studioQueueRunner.RequestStopAsync();
+
             StopAutoMergeWatcher();
             await StopTranslationCallbackServerAsync();
             _runCts?.Cancel();
             await _serverRunner.StopAsync(AppendLog);
+            await AwaitQueueShutdownAsync(mainModeQueueTask, studioQueueTask);
             SetStatus("Idle");
             SetSummary("Stopped.");
         }
         catch (Exception ex)
         {
             AppendLog("Stop warning: " + ex);
+            await AwaitQueueShutdownAsync(mainModeQueueTask, studioQueueTask);
             SetStatus("Stop warning");
             SetSummary(ex.Message);
         }
         finally
         {
-            _runCts?.Dispose();
-            _runCts = null;
-            _publicUrl = null;
-            _publicUrlTextBox.Text = string.Empty;
-            _copyUrlButton.IsEnabled = false;
-            _openUrlButton.IsEnabled = false;
-            SetBusy(false);
+            await FinishStopAsync();
         }
+    }
+
+    private async Task AwaitQueueShutdownAsync(params Task?[] queueTasks)
+    {
+        var tasks = queueTasks
+            .Where(static task => task is not null)
+            .Cast<Task>()
+            .Distinct()
+            .ToArray();
+
+        if (tasks.Length == 0)
+            return;
+
+        try
+        {
+            await Task.WhenAll(tasks);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Queue shutdown warning: " + ex);
+        }
+    }
+
+    private Task FinishStopAsync()
+    {
+        _runCts?.Dispose();
+        _runCts = null;
+        _publicUrl = null;
+        _publicUrlTextBox.Text = string.Empty;
+        _copyUrlButton.IsEnabled = false;
+        _openUrlButton.IsEnabled = false;
+        _mainModeQueueAdapter = null;
+        _studioQueueAdapter = null;
+        _studioQueueStartedEntryId = null;
+        _studioQueueReadyEntryId = null;
+        _translationStudioWindow?.SetBatchLocked(false);
+        UpdateQueueProgress(null);
+        SetMainModeQueueLocked(false);
+        SetBusy(false);
+        return Task.CompletedTask;
     }
 
 
@@ -776,6 +908,465 @@ public partial class MainWindow : Window
     {
         return _tunnelProviderComboBox.SelectedItem as TunnelProviderOption
             ?? _tunnelProviders[0];
+    }
+
+    private bool IsAutoProcessNextVideoEnabled() => _autoProcessNextVideoCheckBox.IsChecked == true;
+
+    private void SetAutoProcessNextVideoEnabled(bool enabled)
+    {
+        Dispatcher.UIThread.Post(() => _autoProcessNextVideoCheckBox.IsChecked = enabled);
+    }
+
+    private VideoEntry? GetPreferredMainModeStartEntry(bool autoProcessNextVideoEnabled)
+    {
+        if (autoProcessNextVideoEnabled)
+            return _workspace.Entries.FirstOrDefault(x => x.IncludeInBatch) ?? (_videosListBox.SelectedItem as VideoEntry);
+
+        return _videosListBox.SelectedItem as VideoEntry;
+    }
+
+    private void StartMainModeQueue()
+    {
+        if (_runCts is null)
+            throw new InvalidOperationException("Main mode queue cannot start without an active cancellation token.");
+
+        if (_mainModeQueueTask is { IsCompleted: false })
+        {
+            AppendLog("Main mode queue is already running.");
+            return;
+        }
+
+        var adapter = new MainModeQueueAdapter(
+            _workspace.Entries,
+            SelectMainModeQueueEntryAsync,
+            PrepareMainModeQueueEntryAsync,
+            OpenMainModeQueueEntryAsync,
+            SetMainModeQueueLocked,
+            HandleMainModeQueueItemStateChanged,
+            ShowMainModeQueueReportAsync);
+
+        _mainModeQueueAdapter = adapter;
+        var queueToken = _runCts.Token;
+        _queueProgressText = null;
+        RefreshSelectionSummary();
+        _mainModeQueueTask = Task.Run(() => RunMainModeQueueAsync(adapter, queueToken));
+    }
+
+    private async Task RunMainModeQueueAsync(MainModeQueueAdapter adapter, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _mainModeQueueRunner.RunAsync(adapter, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            AppendLog("Main mode queue canceled.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Main mode queue failed: " + ex);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                _ = ShowMessageAsync("Auto process next video", ex.Message);
+            });
+        }
+        finally
+        {
+            _mainModeQueueAdapter = null;
+            _mainModeQueueTask = null;
+            UpdateQueueProgress(null);
+        }
+    }
+
+    private async Task SelectMainModeQueueEntryAsync(VideoEntry entry, CancellationToken cancellationToken)
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _videosListBox.SelectedItem = entry;
+            AppendLog(F("Main mode queue selected video: {0}", entry.FileName));
+            SetSummary(F("Queued video: {0}", entry.FileName));
+        }, DispatcherPriority.Normal, cancellationToken);
+    }
+
+    private async Task PrepareMainModeQueueEntryAsync(VideoEntry entry, CancellationToken cancellationToken)
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            SetStatus("Running");
+            SetSummary(F("Preparing batch item: {0}", entry.FileName));
+        }, DispatcherPriority.Normal, cancellationToken);
+    }
+
+    private async Task OpenMainModeQueueEntryAsync(VideoEntry entry, CancellationToken cancellationToken)
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            var playerUrl = BuildPublicPlayerUrlForEntry(entry, _mainModeQueueRunner.ActiveSession?.SessionId);
+            OpenUrl(playerUrl);
+        }, DispatcherPriority.Normal, cancellationToken);
+    }
+
+    private string BuildPublicPlayerUrlForEntry(VideoEntry entry, string? queueSessionId = null)
+    {
+        var publicBaseUrl = GetPublicBaseUrl();
+        if (string.IsNullOrWhiteSpace(publicBaseUrl))
+            throw new InvalidOperationException("Public tunnel is not running.");
+
+        var url = publicBaseUrl.TrimEnd('/')
+            + "/player.html?list=/playlist.json&src="
+            + Uri.EscapeDataString(entry.PlaybackUrl)
+            + "&queueEntryId="
+            + Uri.EscapeDataString(entry.Id)
+            + "&_ts="
+            + DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString(CultureInfo.InvariantCulture);
+
+        if (!string.IsNullOrWhiteSpace(queueSessionId))
+            url += "&queueSessionId=" + Uri.EscapeDataString(queueSessionId);
+
+        return url;
+    }
+
+    private void SetMainModeQueueLocked(bool locked)
+    {
+        _isMainModeQueueLocked = locked;
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshSelectionSummary();
+            UpdateInteractiveState();
+        });
+    }
+
+    private void HandleMainModeQueueItemStateChanged(VideoProcessingQueueItem item)
+    {
+        if (item.Status == VideoProcessingItemLifecycleStatus.Pending)
+            return;
+
+        UpdateQueueProgress(_mainModeQueueRunner);
+        AppendLog(F("Main mode queue: {0}", BuildQueueStateText(item)));
+        SetStatus("Running");
+        SetSummary(BuildQueueStatusSummary(item));
+    }
+
+    private async Task ShowMainModeQueueReportAsync(VideoProcessingQueueReport report, CancellationToken cancellationToken)
+    {
+        StoreLastQueueReport(report);
+        UpdateQueueProgress(null);
+        var reportText = BuildQueueReportText(report);
+        var lines = reportText.Split(Environment.NewLine);
+        AppendLog("Main mode queue finished.");
+        foreach (var line in lines.Where(x => !string.IsNullOrWhiteSpace(x)))
+            AppendLog(F("Queue report: {0}", line));
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            SetStatus(_serverRunner.IsRunning ? "Running" : "Idle");
+            SetSummary("Main mode batch finished.");
+            _ = ShowMessageAsync("Auto process next video", reportText);
+        }, DispatcherPriority.Normal, cancellationToken);
+    }
+
+    private async Task StartTranslationStudioBatchAsync(TranslationStudioBatchRequest request, CancellationToken cancellationToken)
+    {
+        if (_translationStudioWindow is null)
+            throw new InvalidOperationException("Translation Studio window is not open.");
+
+        if (_runCts is null || !_serverRunner.IsRunning)
+            throw new InvalidOperationException("Start the public tunnel before launching Studio batch.");
+
+        if (_studioQueueTask is { IsCompleted: false })
+            throw new InvalidOperationException("Studio batch is already running.");
+
+        await EnsureTranslationCallbackServerAsync();
+        _lastStudioBatchRequest = request;
+
+        var adapter = new StudioModeQueueAdapter(
+            _workspace.Entries,
+            SelectTranslationStudioQueueEntryAsync,
+            (entry, token) => PrepareTranslationStudioQueueEntryAsync(entry, request, token),
+            OpenTranslationStudioQueueEntryAsync,
+            SetTranslationStudioBatchLocked,
+            HandleTranslationStudioQueueItemStateChanged,
+            ShowTranslationStudioQueueReportAsync);
+
+        _studioQueueAdapter = adapter;
+        _studioQueueStartedEntryId = null;
+        _studioQueueReadyEntryId = null;
+        var queueToken = _runCts.Token;
+        _queueProgressText = null;
+        RefreshSelectionSummary();
+        _translationStudioWindow.SetBatchProgressText(null);
+        _studioQueueTask = Task.Run(() => RunTranslationStudioQueueAsync(adapter, queueToken));
+    }
+
+    private async Task RunTranslationStudioQueueAsync(StudioModeQueueAdapter adapter, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _studioQueueRunner.RunAsync(adapter, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            AppendLog("Studio batch canceled.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("Studio batch failed: " + ex);
+            if (_translationStudioWindow is not null)
+            {
+                await Dispatcher.UIThread.InvokeAsync(() =>
+                {
+                    _ = ShowMessageAsync("Translation Studio", ex.Message);
+                });
+            }
+        }
+        finally
+        {
+            _studioQueueAdapter = null;
+            _studioQueueTask = null;
+            _studioQueueStartedEntryId = null;
+            _studioQueueReadyEntryId = null;
+            UpdateQueueProgress(null);
+        }
+    }
+
+    private async Task StopTranslationStudioBatchAsync()
+    {
+        if (_studioQueueRunner.IsRunning)
+            await _studioQueueRunner.RequestStopAsync();
+    }
+
+    private async Task SelectTranslationStudioQueueEntryAsync(VideoEntry entry, CancellationToken cancellationToken)
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _videosListBox.SelectedItem = entry;
+        }, DispatcherPriority.Normal, cancellationToken);
+
+        if (_translationStudioWindow is not null)
+            await _translationStudioWindow.SelectEntryForBatchAsync(entry, cancellationToken);
+
+        AppendLog(F("Studio batch selected video: {0}", entry.FileName));
+    }
+
+    private async Task<TranslationStudioJob> PrepareTranslationStudioQueueEntryAsync(
+        VideoEntry entry,
+        TranslationStudioBatchRequest batchRequest,
+        CancellationToken cancellationToken)
+    {
+        var request = new TranslationStudioPrepareRequest
+        {
+            SourceEntry = entry,
+            AutoMergeOnCallback = true,
+            SplitLongVideo = batchRequest.SplitLongVideo,
+            SplitIfLongerThanMinutes = batchRequest.SplitIfLongerThanMinutes,
+            TargetSegmentMinutes = batchRequest.TargetSegmentMinutes,
+            OriginalAudioVolumePercent = batchRequest.OriginalAudioVolumePercent,
+            TranslatedAudioVolumePercent = batchRequest.TranslatedAudioVolumePercent
+        };
+
+        var job = await PrepareTranslationStudioJobAsync(request, cancellationToken);
+        _studioQueueAdapter?.RegisterPreparedJob(entry.Id, job);
+
+        if (_translationStudioWindow is not null)
+        {
+            await _translationStudioWindow.DisplayBatchPreparedJobAsync(
+                job,
+                null,
+                "Prepared",
+                $"Studio batch prepared: {entry.Title}",
+                cancellationToken);
+        }
+
+        return job;
+    }
+
+    private async Task OpenTranslationStudioQueueEntryAsync(VideoEntry entry, CancellationToken cancellationToken)
+    {
+        if (_studioQueueAdapter is null || !_studioQueueAdapter.TryGetPreparedJob(entry.Id, out var job) || job is null)
+        {
+            await _studioQueueRunner.NotifyTranslationFailedAsync(
+                entry.Id,
+                _studioQueueRunner.ActiveSession?.SessionId,
+                "studio-job-missing",
+                "Prepared Translation Studio job was not found for: " + entry.Title,
+                cancellationToken);
+            return;
+        }
+
+        try
+        {
+            _studioQueueStartedEntryId = null;
+            _studioQueueReadyEntryId = null;
+
+            if (TranslationStudioFileState.IsFinalOutputCurrent(job))
+            {
+                _studioQueueAdapter.RegisterCompletedOutputPath(entry.Id, job.FinalOutputPath);
+                _studioQueueStartedEntryId = entry.Id;
+                _studioQueueReadyEntryId = entry.Id;
+                var sessionId = _studioQueueRunner.ActiveSession?.SessionId;
+                await _studioQueueRunner.NotifyTranslationStartedAsync(entry.Id, sessionId, cancellationToken);
+                await _studioQueueRunner.NotifyTranslationReadyAsync(entry.Id, sessionId, cancellationToken);
+                await _studioQueueRunner.NotifyProcessingCompletedAsync(entry.Id, sessionId, job.FinalOutputPath, cancellationToken);
+                return;
+            }
+
+            var nextSegment = GetNextTranslationStudioBatchPendingSegment(job);
+            if (nextSegment is null)
+            {
+                job = await BuildTranslationStudioFinalVideoAsync(job, job.OriginalAudioVolumePercent, job.TranslatedAudioVolumePercent, cancellationToken);
+                _studioQueueAdapter.RegisterPreparedJob(entry.Id, job);
+
+                if (!TranslationStudioFileState.IsFinalOutputCurrent(job))
+                    throw new InvalidOperationException("Translation Studio final output was not created.");
+
+                _studioQueueAdapter.RegisterCompletedOutputPath(entry.Id, job.FinalOutputPath);
+                _studioQueueStartedEntryId = entry.Id;
+                _studioQueueReadyEntryId = entry.Id;
+                var sessionId = _studioQueueRunner.ActiveSession?.SessionId;
+                await _studioQueueRunner.NotifyTranslationStartedAsync(entry.Id, sessionId, cancellationToken);
+                await _studioQueueRunner.NotifyTranslationReadyAsync(entry.Id, sessionId, cancellationToken);
+                await _studioQueueRunner.NotifyProcessingCompletedAsync(entry.Id, sessionId, job.FinalOutputPath, cancellationToken);
+                return;
+            }
+
+            if (_translationStudioWindow is not null)
+            {
+                await _translationStudioWindow.DisplayBatchPreparedJobAsync(
+                    job,
+                    nextSegment,
+                    "Segment opened",
+                    $"Studio batch opened segment {nextSegment.Index}/{nextSegment.TotalSegments}: {entry.Title}",
+                    cancellationToken);
+            }
+
+            await OpenTranslationStudioPlayerAsync(job, nextSegment, cancellationToken, _studioQueueRunner.ActiveSession?.SessionId);
+        }
+        catch (Exception ex)
+        {
+            if (TranslationStudioFileState.IsFinalOutputCurrent(job))
+            {
+                _studioQueueAdapter?.RegisterCompletedOutputPath(entry.Id, job.FinalOutputPath);
+                await _studioQueueRunner.NotifyProcessingCompletedAsync(entry.Id, _studioQueueRunner.ActiveSession?.SessionId, job.FinalOutputPath, cancellationToken);
+                return;
+            }
+
+            if (GetNextTranslationStudioBatchPendingSegment(job) is null)
+            {
+                _studioQueueStartedEntryId = entry.Id;
+                _studioQueueReadyEntryId = entry.Id;
+                var sessionId = _studioQueueRunner.ActiveSession?.SessionId;
+                await _studioQueueRunner.NotifyTranslationStartedAsync(entry.Id, sessionId, cancellationToken);
+                await _studioQueueRunner.NotifyTranslationReadyAsync(entry.Id, sessionId, cancellationToken);
+                await _studioQueueRunner.NotifyProcessingFailedAsync(
+                    entry.Id,
+                    sessionId,
+                    "studio-finalization-failed",
+                    ex.Message,
+                    cancellationToken);
+                return;
+            }
+
+            await _studioQueueRunner.NotifyTranslationFailedAsync(
+                entry.Id,
+                _studioQueueRunner.ActiveSession?.SessionId,
+                "studio-open-failed",
+                ex.Message,
+                cancellationToken);
+        }
+    }
+
+    private static TranslationStudioSegment? GetNextTranslationStudioBatchPendingSegment(TranslationStudioJob job)
+    {
+        return job.Segments
+            .OrderBy(x => x.Index)
+            .FirstOrDefault(x => !x.HasTranslatedAudio);
+    }
+
+    private void SetTranslationStudioBatchLocked(bool locked)
+    {
+        _translationStudioWindow?.SetBatchLocked(locked);
+    }
+
+    private void HandleTranslationStudioQueueItemStateChanged(VideoProcessingQueueItem item)
+    {
+        if (item.Status == VideoProcessingItemLifecycleStatus.Pending)
+            return;
+
+        UpdateQueueProgress(_studioQueueRunner);
+        AppendLog(F("Studio batch: {0}", BuildQueueStateText(item)));
+        SetSummary(BuildQueueStatusSummary(item));
+    }
+
+    private async Task ShowTranslationStudioQueueReportAsync(VideoProcessingQueueReport report, CancellationToken cancellationToken)
+    {
+        StoreLastQueueReport(report);
+        UpdateQueueProgress(null);
+        var reportText = BuildQueueReportText(report);
+        AppendLog("Studio batch finished.");
+
+        if (_translationStudioWindow is not null)
+        {
+            await _translationStudioWindow.ShowBatchReportAsync(reportText, cancellationToken);
+            return;
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _ = ShowMessageAsync("Translation Studio", reportText);
+        }, DispatcherPriority.Normal, cancellationToken);
+    }
+
+    private string BuildQueueReportText(VideoProcessingQueueReport report)
+    {
+        var lines = new List<string>
+        {
+            F("Found: {0}", report.Found),
+            F("Selected: {0}", report.Selected),
+            F("Processed: {0}", report.Processed),
+            F("Failed: {0}", report.Failed),
+            F("Skipped: {0}", report.Skipped),
+            F("Canceled: {0}", report.Canceled)
+        };
+
+        AppendReportSection(
+            lines,
+            T("Failed videos:"),
+            report.Items.Where(x => x.Status is VideoProcessingItemLifecycleStatus.Failed or VideoProcessingItemLifecycleStatus.TimedOut));
+
+        AppendReportSection(
+            lines,
+            T("Canceled videos:"),
+            report.Items.Where(x => x.Status == VideoProcessingItemLifecycleStatus.Canceled));
+
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    private void AppendReportSection(
+        List<string> lines,
+        string title,
+        IEnumerable<VideoProcessingQueueItemResult> items)
+    {
+        var formattedItems = items
+            .Select(item => FormatQueueReportItem(item))
+            .ToList();
+
+        if (formattedItems.Count == 0)
+            return;
+
+        lines.Add(string.Empty);
+        lines.Add(title);
+        lines.AddRange(formattedItems);
+    }
+
+    private string FormatQueueReportItem(VideoProcessingQueueItemResult item)
+    {
+        var details = item.ErrorMessage
+            ?? item.Message
+            ?? item.SkipReason;
+
+        return string.IsNullOrWhiteSpace(details)
+            ? "- " + item.Title
+            : $"- {item.Title}: {T(details)}";
     }
 
     private async Task ShowDependencySetupWindowAsync(string folder, string? startupError)
@@ -1016,7 +1607,11 @@ public partial class MainWindow : Window
         return job;
     }
 
-    private async Task<string> OpenTranslationStudioPlayerAsync(TranslationStudioJob job, TranslationStudioSegment? segment, CancellationToken cancellationToken)
+    private async Task<string> OpenTranslationStudioPlayerAsync(
+        TranslationStudioJob job,
+        TranslationStudioSegment? segment,
+        CancellationToken cancellationToken,
+        string? queueSessionId = null)
     {
         if (!_serverRunner.IsRunning || string.IsNullOrWhiteSpace(_publicUrl))
             throw new InvalidOperationException("Start a public tunnel first. Translation Studio uses its own page only while the tunnel is active.");
@@ -1025,7 +1620,7 @@ public partial class MainWindow : Window
         if (string.IsNullOrWhiteSpace(publicBaseUrl))
             throw new InvalidOperationException("Public tunnel is not running. Start the tunnel first.");
 
-        var playerUrl = _translationStudioService.BuildPublicPlayerUrl(publicBaseUrl, job, segment);
+        var playerUrl = _translationStudioService.BuildPublicPlayerUrl(publicBaseUrl, job, segment, queueSessionId, job.JobId);
         await Dispatcher.UIThread.InvokeAsync(() => OpenUrl(playerUrl));
         return playerUrl;
     }
@@ -1123,9 +1718,8 @@ public partial class MainWindow : Window
         return job;
     }
 
-    private async Task HandleTranslationStudioCallbackAsync(TranslationStudioJob job, TranslationStudioSegment segment, TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    private async Task<TranslationStudioJob> ProcessTranslationStudioCallbackCoreAsync(TranslationStudioJob job, TranslationStudioSegment segment, TranslationCallbackPayload payload, CancellationToken cancellationToken)
     {
-
         await _autoMergeSemaphore.WaitAsync(cancellationToken);
         try
         {
@@ -1134,7 +1728,7 @@ public partial class MainWindow : Window
                 segment.LastCallbackHandledAtUtc is DateTime lastHandledAtUtc &&
                 DateTime.UtcNow - lastHandledAtUtc < TimeSpan.FromSeconds(30))
             {
-                return;
+                return job;
             }
 
             var shouldRefreshAudio = TranslationStudioFileState.NeedsRefreshFromSource(
@@ -1183,14 +1777,144 @@ public partial class MainWindow : Window
 
             await _translationStudioService.SaveManifestAsync(job, cancellationToken);
             RegisterTranslationStudioJob(job);
-        }
-        catch (Exception ex)
-        {
-            AppendLog($"Translation Studio callback failed for segment {segment.Index}/{segment.TotalSegments}: {ex.Message}");
+            return job;
         }
         finally
         {
             _autoMergeSemaphore.Release();
+        }
+    }
+
+    private async Task HandleTranslationStudioStartedCallbackAsync(TranslationStudioJob job, TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        if (!_studioQueueRunner.IsRunning)
+        {
+            if (!string.IsNullOrWhiteSpace(payload.SessionId))
+                AppendLog("Ignoring stale Translation Studio translation-started callback for completed session: " + payload.SessionId);
+            return;
+        }
+
+        if (string.Equals(_studioQueueStartedEntryId, job.JobId, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        var notified = await _studioQueueRunner.NotifyTranslationStartedAsync(job.JobId, payload.SessionId, cancellationToken);
+        if (notified)
+            _studioQueueStartedEntryId = job.JobId;
+        else
+            AppendLog("Ignoring stale Translation Studio translation-started callback for session: " + (payload.SessionId ?? "(missing)"));
+    }
+
+    private async Task HandleTranslationStudioFailedCallbackAsync(TranslationStudioJob job, TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        if (!_studioQueueRunner.IsRunning)
+        {
+            if (!string.IsNullOrWhiteSpace(payload.SessionId))
+                AppendLog("Ignoring stale Translation Studio translation-failed callback for completed session: " + payload.SessionId);
+            return;
+        }
+
+        var errorCode = string.IsNullOrWhiteSpace(payload.ErrorCode) ? "translation-failed" : payload.ErrorCode!;
+        var errorMessage = string.IsNullOrWhiteSpace(payload.ErrorMessage) ? "Translation failed." : payload.ErrorMessage!;
+        var notified = await _studioQueueRunner.NotifyTranslationFailedAsync(job.JobId, payload.SessionId, errorCode, errorMessage, cancellationToken);
+        if (!notified)
+            AppendLog("Ignoring stale Translation Studio translation-failed callback for session: " + (payload.SessionId ?? "(missing)"));
+    }
+
+    private async Task HandleTranslationStudioReadyCallbackAsync(TranslationStudioJob job, TranslationStudioSegment segment, TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!_studioQueueRunner.IsRunning && !string.IsNullOrWhiteSpace(payload.SessionId))
+            {
+                AppendLog("Ignoring stale Translation Studio translation-ready callback for completed session: " + payload.SessionId);
+                return;
+            }
+
+            if (_studioQueueRunner.IsRunning &&
+                !string.Equals(_studioQueueReadyEntryId, job.JobId, StringComparison.OrdinalIgnoreCase))
+            {
+                var notifiedReady = await _studioQueueRunner.NotifyTranslationReadyAsync(job.JobId, payload.SessionId, cancellationToken);
+                if (!notifiedReady)
+                {
+                    AppendLog("Ignoring stale Translation Studio translation-ready callback for session: " + (payload.SessionId ?? "(missing)"));
+                    return;
+                }
+
+                _studioQueueReadyEntryId = job.JobId;
+            }
+
+            job = await ProcessTranslationStudioCallbackCoreAsync(job, segment, payload, cancellationToken);
+            _studioQueueAdapter?.RegisterPreparedJob(job.JobId, job);
+
+            if (_translationStudioWindow is not null)
+            {
+                await _translationStudioWindow.DisplayBatchPreparedJobAsync(
+                    job,
+                    segment,
+                    "Job loaded",
+                    $"Translation Studio callback processed for segment {segment.Index}/{segment.TotalSegments}.",
+                    cancellationToken);
+            }
+
+            if (!_studioQueueRunner.IsRunning)
+                return;
+
+            if (TranslationStudioFileState.IsFinalOutputCurrent(job))
+            {
+                if (_translationStudioWindow is not null)
+                {
+                    await _translationStudioWindow.DisplayBatchPreparedJobAsync(
+                        job,
+                        segment,
+                        "Final video ready",
+                        "The final translated video was built successfully. You can open it from this window.",
+                        cancellationToken);
+                }
+
+                _studioQueueAdapter?.RegisterCompletedOutputPath(job.JobId, job.FinalOutputPath);
+                await _studioQueueRunner.NotifyProcessingCompletedAsync(job.JobId, payload.SessionId, job.FinalOutputPath, cancellationToken);
+                return;
+            }
+
+            var nextSegment = GetNextTranslationStudioBatchPendingSegment(job);
+            if (nextSegment is not null)
+            {
+                if (_translationStudioWindow is not null)
+                {
+                    await _translationStudioWindow.DisplayBatchPreparedJobAsync(
+                        job,
+                        nextSegment,
+                        "Segment opened",
+                        $"Studio batch opened next segment {nextSegment.Index}/{nextSegment.TotalSegments}.",
+                        cancellationToken);
+                }
+
+                await OpenTranslationStudioPlayerAsync(job, nextSegment, cancellationToken, payload.SessionId);
+                return;
+            }
+
+            if (!TranslationStudioFileState.IsFinalOutputCurrent(job))
+            {
+                await _studioQueueRunner.NotifyProcessingFailedAsync(
+                    job.JobId,
+                    payload.SessionId,
+                    "studio-final-output-missing",
+                    "Translation Studio final output is not ready after callback processing.",
+                    cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Translation Studio callback failed for segment {segment.Index}/{segment.TotalSegments}: {ex.Message}");
+            if (_studioQueueRunner.IsRunning)
+            {
+                await _studioQueueRunner.NotifyProcessingFailedAsync(
+                    job.JobId,
+                    payload.SessionId,
+                    "studio-processing-failed",
+                    ex.Message,
+                    CancellationToken.None);
+            }
         }
     }
 
@@ -1450,7 +2174,10 @@ public partial class MainWindow : Window
             }
 
             var requestPath = context.Request.Url?.AbsolutePath ?? string.Empty;
-            if (!requestPath.Equals("/translation-ready", StringComparison.OrdinalIgnoreCase))
+            var isTranslationStarted = requestPath.Equals("/translation-started", StringComparison.OrdinalIgnoreCase);
+            var isTranslationReady = requestPath.Equals("/translation-ready", StringComparison.OrdinalIgnoreCase);
+            var isTranslationFailed = requestPath.Equals("/translation-failed", StringComparison.OrdinalIgnoreCase);
+            if (!isTranslationStarted && !isTranslationReady && !isTranslationFailed)
             {
                 context.Response.StatusCode = 404;
                 context.Response.Close();
@@ -1471,25 +2198,80 @@ public partial class MainWindow : Window
                 payload = JsonSerializer.Deserialize<TranslationCallbackPayload>(body, new JsonSerializerOptions(JsonSerializerDefaults.Web));
             }
 
-            if (payload is null || string.IsNullOrWhiteSpace(payload.Url))
+            payload ??= new TranslationCallbackPayload();
+
+            if (isTranslationReady && string.IsNullOrWhiteSpace(payload.Url))
             {
                 context.Response.StatusCode = 400;
                 await WriteJsonResponseAsync(context.Response, "{\"ok\":false,\"error\":\"translation url is missing\"}");
                 return;
             }
 
-            AppendLog("Received translation URL from player: " + payload.Url);
             context.Response.StatusCode = 202;
             await WriteJsonResponseAsync(context.Response, "{\"ok\":true}");
 
+            var callbackToken = _translationCallbackCts?.Token ?? CancellationToken.None;
             var studioSegment = ResolveTranslationStudioSegment(payload.VideoSrc);
-            var studioJob = ResolveTranslationStudioJobById(studioSegment?.JobId);
-            if (studioSegment is not null && studioJob is not null)
+            var studioJob = ResolveTranslationStudioJobById(studioSegment?.JobId ?? payload.EntryId);
+
+            if (studioJob is not null && (studioSegment is not null || !isTranslationReady))
             {
-                AppendLog($"Translation callback matched Translation Studio segment {studioSegment.Index}/{studioSegment.TotalSegments}: {studioJob.SourceVideoTitle}");
-                _ = Task.Run(() => HandleTranslationStudioCallbackAsync(studioJob, studioSegment, payload, _translationCallbackCts?.Token ?? CancellationToken.None));
+                if (isTranslationStarted)
+                {
+                    AppendLog(studioSegment is null
+                        ? $"Translation Studio started for job: {studioJob.SourceVideoTitle}"
+                        : $"Translation Studio started for segment {studioSegment.Index}/{studioSegment.TotalSegments}: {studioJob.SourceVideoTitle}");
+                    _ = Task.Run(() => HandleTranslationStudioStartedCallbackAsync(studioJob, payload, callbackToken), callbackToken);
+                    return;
+                }
+
+                if (isTranslationFailed)
+                {
+                    var failureDetails = string.Join(" | ", new[] { payload.ErrorCode, payload.ErrorMessage }
+                        .Where(x => !string.IsNullOrWhiteSpace(x)));
+                    var studioMessage = studioSegment is null
+                        ? $"Translation Studio failed for job: {studioJob.SourceVideoTitle}"
+                        : $"Translation Studio failed for segment {studioSegment.Index}/{studioSegment.TotalSegments}: {studioJob.SourceVideoTitle}";
+                    if (!string.IsNullOrWhiteSpace(failureDetails))
+                        studioMessage += " | " + failureDetails;
+
+                    AppendLog(studioMessage);
+                    _ = Task.Run(() => HandleTranslationStudioFailedCallbackAsync(studioJob, payload, callbackToken), callbackToken);
+                    return;
+                }
+
+                if (studioSegment is null)
+                {
+                    AppendLog("Translation Studio callback did not match any prepared payload: " + (payload.VideoSrc ?? "(missing videoSrc)"));
+                    return;
+                }
+
+                AppendLog($"Translation Studio callback matched segment {studioSegment.Index}/{studioSegment.TotalSegments}: {studioJob.SourceVideoTitle}");
+                _ = Task.Run(() => HandleTranslationStudioReadyCallbackAsync(studioJob, studioSegment, payload, callbackToken), callbackToken);
                 return;
             }
+
+            if (isTranslationStarted)
+            {
+                AppendLog("Received translation-started callback: " + DescribeTranslationCallbackTarget(payload));
+                _ = Task.Run(() => HandleMainModeTranslationStartedCallbackAsync(payload, callbackToken), callbackToken);
+                return;
+            }
+
+            if (isTranslationFailed)
+            {
+                var failureDetails = string.Join(" | ", new[] { payload.ErrorCode, payload.ErrorMessage }
+                    .Where(x => !string.IsNullOrWhiteSpace(x)));
+                var message = "Received translation-failed callback: " + DescribeTranslationCallbackTarget(payload);
+                if (!string.IsNullOrWhiteSpace(failureDetails))
+                    message += " | " + failureDetails;
+
+                AppendLog(message);
+                _ = Task.Run(() => HandleMainModeTranslationFailedCallbackAsync(payload, callbackToken), callbackToken);
+                return;
+            }
+
+            AppendLog("Received translation URL from player: " + payload.Url);
 
             var normalizedVideoSrc = NormalizeVideoSrc(payload.VideoSrc);
             if (!string.IsNullOrWhiteSpace(normalizedVideoSrc) &&
@@ -1498,7 +2280,7 @@ public partial class MainWindow : Window
                 AppendLog("Translation Studio callback did not match any prepared payload: " + normalizedVideoSrc);
             }
 
-            _ = Task.Run(() => TryAutoMergeFromTranslationUrlAsync(payload, _translationCallbackCts?.Token ?? CancellationToken.None));
+            _ = Task.Run(() => HandleMainModeTranslationReadyCallbackAsync(payload, callbackToken), callbackToken);
         }
         catch (Exception ex)
         {
@@ -1519,6 +2301,17 @@ public partial class MainWindow : Window
         response.ContentLength64 = bytes.Length;
         await response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
         response.Close();
+    }
+
+    private static string DescribeTranslationCallbackTarget(TranslationCallbackPayload payload)
+    {
+        if (!string.IsNullOrWhiteSpace(payload.VideoTitle))
+            return payload.VideoTitle;
+
+        if (!string.IsNullOrWhiteSpace(payload.VideoSrc))
+            return payload.VideoSrc;
+
+        return "(unknown video)";
     }
 
     private void StartAutoMergeWatcher()
@@ -1608,21 +2401,113 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task TryAutoMergeFromTranslationUrlAsync(TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    private async Task HandleMainModeTranslationStartedCallbackAsync(TranslationCallbackPayload payload, CancellationToken cancellationToken)
     {
         try
         {
-            await TryAutoMergeCoreAsync(
-                payload,
-                cancellationToken,
-                async (storedAudioPath, sourceEntry, innerToken) =>
-                {
-                    await DownloadTranslationAudioAsync(payload, storedAudioPath, innerToken);
-                    AppendLog("Downloaded translated audio to: " + storedAudioPath);
-                    return payload.Url;
-                });
+            if (!_mainModeQueueRunner.IsRunning)
+            {
+                if (!string.IsNullOrWhiteSpace(payload.SessionId))
+                    AppendLog("Ignoring stale or completed translation-started callback for session " + payload.SessionId + ".");
+                return;
+            }
+
+            var targetEntry = ResolveMainModeQueueCallbackEntry(payload);
+            if (targetEntry is null)
+            {
+                AppendLog("Main mode queue could not match translation-started to any video.");
+                return;
+            }
+
+            var notified = await _mainModeQueueRunner.NotifyTranslationStartedAsync(targetEntry.Id, payload.SessionId, cancellationToken);
+            if (!notified)
+                AppendLog("Ignoring stale or non-active translation-started callback for session " + (payload.SessionId ?? "(missing)") + ": " + targetEntry.FileName);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task HandleMainModeTranslationFailedCallbackAsync(TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        try
+        {
+            if (!_mainModeQueueRunner.IsRunning)
+            {
+                if (!string.IsNullOrWhiteSpace(payload.SessionId))
+                    AppendLog("Ignoring stale or completed translation-failed callback for session " + payload.SessionId + ".");
+                return;
+            }
+
+            var targetEntry = ResolveMainModeQueueCallbackEntry(payload);
+            if (targetEntry is null)
+            {
+                AppendLog("Main mode queue could not match translation-failed to any video.");
+                return;
+            }
+
+            var errorCode = string.IsNullOrWhiteSpace(payload.ErrorCode) ? "translation-failed" : payload.ErrorCode!;
+            var errorMessage = string.IsNullOrWhiteSpace(payload.ErrorMessage) ? "Translation failed." : payload.ErrorMessage!;
+            var notified = await _mainModeQueueRunner.NotifyTranslationFailedAsync(targetEntry.Id, payload.SessionId, errorCode, errorMessage, cancellationToken);
+            if (!notified)
+                AppendLog("Ignoring stale or non-active translation-failed callback for session " + (payload.SessionId ?? "(missing)") + ": " + targetEntry.FileName);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+    }
+
+    private async Task HandleMainModeTranslationReadyCallbackAsync(TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        VideoEntry? targetEntry = null;
+        var shouldNotifyQueue = false;
+
+        try
+        {
+            if (!_mainModeQueueRunner.IsRunning && !string.IsNullOrWhiteSpace(payload.SessionId))
+            {
+                AppendLog("Ignoring stale or completed translation-ready callback for session " + payload.SessionId + ".");
+                return;
+            }
+
+            if (_mainModeQueueRunner.IsRunning)
+            {
+                targetEntry = ResolveMainModeQueueCallbackEntry(payload);
+                if (targetEntry is null)
+                {
+                    AppendLog("Main mode queue could not match translation-ready to any video.");
+                    return;
+                }
+
+                var notifiedReady = await _mainModeQueueRunner.NotifyTranslationReadyAsync(targetEntry.Id, payload.SessionId, cancellationToken);
+                if (!notifiedReady)
+                {
+                    AppendLog("Ignoring stale or non-active translation-ready callback for session " + (payload.SessionId ?? "(missing)") + ": " + targetEntry.FileName);
+                    return;
+                }
+
+                shouldNotifyQueue = true;
+            }
+
+            var outputPath = await TryAutoMergeFromTranslationUrlAsync(payload, cancellationToken);
+            if (!shouldNotifyQueue || targetEntry is null)
+                return;
+
+            if (string.IsNullOrWhiteSpace(outputPath))
+            {
+                await _mainModeQueueRunner.NotifyProcessingFailedAsync(
+                    targetEntry.Id,
+                    payload.SessionId,
+                    "processing-no-output",
+                    "Translation processing finished without a saved output path.",
+                    cancellationToken);
+                return;
+            }
+
+            _mainModeQueueAdapter?.RegisterCompletedOutputPath(targetEntry.Id, outputPath);
+            await _mainModeQueueRunner.NotifyProcessingCompletedAsync(targetEntry.Id, payload.SessionId, outputPath, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
         }
         catch (Exception ex)
@@ -1632,10 +2517,36 @@ public partial class MainWindow : Window
             {
                 _ = ShowMessageAsync("Auto merge", ex.Message);
             });
+
+            if (shouldNotifyQueue && targetEntry is not null)
+            {
+                await _mainModeQueueRunner.NotifyProcessingFailedAsync(
+                    targetEntry.Id,
+                    payload.SessionId,
+                    "processing-failed",
+                    ex.Message,
+                    CancellationToken.None);
+            }
         }
     }
 
-    private async Task TryAutoMergeCoreAsync(
+    private VideoEntry? ResolveMainModeQueueCallbackEntry(TranslationCallbackPayload payload)
+        => QueueCallbackTargetResolver.ResolveQueueEntry(_workspace.Entries, payload.EntryId, payload.VideoSrc);
+
+    private async Task<string?> TryAutoMergeFromTranslationUrlAsync(TranslationCallbackPayload payload, CancellationToken cancellationToken)
+    {
+        return await TryAutoMergeCoreAsync(
+            payload,
+            cancellationToken,
+            async (storedAudioPath, sourceEntry, innerToken) =>
+            {
+                await DownloadTranslationAudioAsync(payload, storedAudioPath, innerToken);
+                AppendLog("Downloaded translated audio to: " + storedAudioPath);
+                return payload.Url;
+            });
+    }
+
+    private async Task<string?> TryAutoMergeCoreAsync(
         TranslationCallbackPayload payload,
         CancellationToken cancellationToken,
         Func<string, VideoEntry, CancellationToken, Task<string>> acquireAudioAsync)
@@ -1645,13 +2556,13 @@ public partial class MainWindow : Window
         {
             var autoMergeEnabled = await Dispatcher.UIThread.InvokeAsync(() => _mergeTranslationCheckBox.IsChecked == true);
             if (!_serverRunner.IsRunning)
-                return;
+                return null;
 
             if (!string.IsNullOrWhiteSpace(payload.Url)
                 && string.Equals(_lastAutoMergedAudioPath, payload.Url, StringComparison.OrdinalIgnoreCase)
                 && DateTime.UtcNow - _lastAutoMergedAtUtc < TimeSpan.FromSeconds(30))
             {
-                return;
+                return null;
             }
 
             var selectedEntry = await Dispatcher.UIThread.InvokeAsync(() => _videosListBox.SelectedItem as VideoEntry);
@@ -1659,14 +2570,14 @@ public partial class MainWindow : Window
             if (targetEntry is null)
             {
                 AppendLog("Auto-merge skipped: no matching video was found for the translated audio.");
-                return;
+                return null;
             }
 
             var folder = await Dispatcher.UIThread.InvokeAsync(() => (_folderTextBox.Text ?? string.Empty).Trim());
             if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
             {
                 AppendLog("Auto-merge skipped: working folder is unavailable.");
-                return;
+                return null;
             }
 
             await Dispatcher.UIThread.InvokeAsync(() => SetBusy(true, "Auto merge in progress..."));
@@ -1704,14 +2615,14 @@ public partial class MainWindow : Window
                 AppendLog("Translated audio saved to: " + storedAudioPath);
                 SetStatus("Running");
                 SetSummary("Translated audio was saved to translated_audio. Auto merge is off.");
-                return;
+                return storedAudioPath;
             }
 
             if (outputAlreadyExists)
             {
                 SetStatus("Running");
                 SetSummary("Translated video already exists. Auto merge skipped.");
-                return;
+                return outputPath;
             }
 
             var originalAudioVolumePercent = GetOriginalAudioVolumePercent();
@@ -1730,6 +2641,7 @@ public partial class MainWindow : Window
             AppendLog("Merged translated video saved to: " + outputPath);
             SetStatus("Running");
             SetSummary("Translated audio was merged successfully. Output saved to merged_output.");
+            return outputPath;
         }
         finally
         {
@@ -1759,19 +2671,8 @@ public partial class MainWindow : Window
 
     private VideoEntry? ResolveTargetVideoEntry(TranslationCallbackPayload payload, VideoEntry? selectedEntry)
     {
-        if (!string.IsNullOrWhiteSpace(payload.VideoSrc))
-        {
-            var normalized = NormalizeVideoSrc(payload.VideoSrc);
-            var matched = _workspace.Entries.FirstOrDefault(x =>
-                string.Equals(NormalizeVideoSrc(x.VotHelperUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(NormalizeVideoSrc(x.PlaybackUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(NormalizeVideoSrc(x.TranslationUrl), normalized, StringComparison.OrdinalIgnoreCase) ||
-                string.Equals(NormalizeVideoSrc(x.OriginalUrl), normalized, StringComparison.OrdinalIgnoreCase));
-            if (matched is not null)
-                return matched;
-        }
-
-        return selectedEntry;
+        return QueueCallbackTargetResolver.ResolveQueueEntry(_workspace.Entries, payload.EntryId, payload.VideoSrc)
+            ?? selectedEntry;
     }
 
     private static string NormalizeVideoSrc(string? value)
@@ -1927,12 +2828,16 @@ public partial class MainWindow : Window
     private sealed class TranslationCallbackPayload
     {
         public string Url { get; set; } = string.Empty;
+        public string? EntryId { get; set; }
+        public string? SessionId { get; set; }
         public string? VideoSrc { get; set; }
         public string? VideoTitle { get; set; }
         public string? SuggestedFileName { get; set; }
 
         public string? SubtitlesUrl { get; set; }
         public string? SuggestedSubtitlesFileName { get; set; }
+        public string? ErrorCode { get; set; }
+        public string? ErrorMessage { get; set; }
     }
 
     private static string? GetDownloadsFolderPath()
@@ -1955,34 +2860,46 @@ public partial class MainWindow : Window
 
     private void RenderVideos()
     {
+        foreach (var entry in _videoItems)
+            entry.PropertyChanged -= VideoEntry_OnPropertyChanged;
+
         var showDetailed = _workspace.ProxyTranslationEnabled;
         _detailedHeaderGrid.IsVisible = showDetailed;
         _simpleHeaderGrid.IsVisible = !showDetailed;
 
         _videoItems.Clear();
         foreach (var entry in _workspace.Entries)
+        {
+            entry.PropertyChanged += VideoEntry_OnPropertyChanged;
             _videoItems.Add(entry);
+        }
+
+        RefreshSelectionSummary();
+    }
+
+    private void VideoEntry_OnPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(VideoEntry.IncludeInBatch))
+            RefreshSelectionSummary();
+    }
+
+    private void RefreshSelectionSummary()
+    {
+        var found = _workspace.Entries.Count;
+        var selected = BatchSelectionHelper.CountSelected(_workspace.Entries);
+        var progressText = _queueProgressText;
+        _selectionSummaryTextBlock.Text = string.IsNullOrWhiteSpace(progressText)
+            ? F("Found: {0} | Selected: {1}", found, selected)
+            : F("Found: {0} | Selected: {1} | {2}", found, selected, progressText);
     }
 
     private void SetBusy(bool busy, string? status = null)
     {
-        _browseButton.IsEnabled = !busy;
-        _scanButton.IsEnabled = !busy;
-        _fixDnsButton.IsEnabled = true;
-        _dependenciesButton.IsEnabled = !busy;
-        _translationStudioButton.IsEnabled = !busy && _serverRunner.IsRunning;
-        _tunnelSetupButton.IsEnabled = !busy && !_serverRunner.IsRunning;
-        _mergeTranslationCheckBox.IsEnabled = !busy;
-        _proxyModeCheckBox.IsEnabled = !busy && !_serverRunner.IsRunning;
-        _portNumeric.IsEnabled = !busy && !_serverRunner.IsRunning;
-        _tunnelProviderComboBox.IsEnabled = !busy && !_serverRunner.IsRunning;
-        _autostartBrowserCheckBox.IsEnabled = !busy;
-
-        _startButton.IsEnabled = !busy && !_serverRunner.IsRunning;
-        _stopButton.IsEnabled = busy || _serverRunner.IsRunning;
+        _isBusy = busy;
 
         Dispatcher.UIThread.Post(() =>
         {
+            UpdateInteractiveState();
             _busyProgressBar.IsVisible = busy;
             _busyTextBlock.IsVisible = busy;
             _busyTextBlock.Text = busy
@@ -1998,8 +2915,168 @@ public partial class MainWindow : Window
             SetStatus("Running");
     }
 
+    private void UpdateInteractiveState()
+    {
+        var hasEntries = _workspace.Entries.Count > 0;
+        var queueLocked = _isMainModeQueueLocked;
+        var canChangeBatchSelection = !_isBusy && !queueLocked && hasEntries;
+
+        _browseButton.IsEnabled = !_isBusy && !queueLocked;
+        _scanButton.IsEnabled = !_isBusy && !queueLocked;
+        _fixDnsButton.IsEnabled = true;
+        _dependenciesButton.IsEnabled = !_isBusy && !queueLocked;
+        _translationStudioButton.IsEnabled = !_isBusy && _serverRunner.IsRunning && !queueLocked;
+        _tunnelSetupButton.IsEnabled = !_isBusy && !_serverRunner.IsRunning && !queueLocked;
+        _mergeTranslationCheckBox.IsEnabled = !_isBusy && !queueLocked;
+        _autoProcessNextVideoCheckBox.IsEnabled = !_isBusy && !_serverRunner.IsRunning && !queueLocked;
+        _proxyModeCheckBox.IsEnabled = !_isBusy && !_serverRunner.IsRunning && !queueLocked;
+        _portNumeric.IsEnabled = !_isBusy && !_serverRunner.IsRunning && !queueLocked;
+        _tunnelProviderComboBox.IsEnabled = !_isBusy && !_serverRunner.IsRunning && !queueLocked;
+        _autostartBrowserCheckBox.IsEnabled = !_isBusy && !queueLocked;
+        _selectAllButton.IsEnabled = canChangeBatchSelection;
+        _unselectAllButton.IsEnabled = canChangeBatchSelection;
+        _invertSelectionButton.IsEnabled = canChangeBatchSelection;
+        _retryFailedButton.IsEnabled = CanRetryFailedLastBatch();
+        _videosListBox.IsEnabled = !_isBusy && !queueLocked;
+
+        _startButton.IsEnabled = !_isBusy && !_serverRunner.IsRunning;
+        _stopButton.IsEnabled = _isBusy || _serverRunner.IsRunning || queueLocked;
+    }
+
     private void SetStatus(string text) => Dispatcher.UIThread.Post(() => _statusTextBlock.Text = T(text));
     private void SetSummary(string text) => Dispatcher.UIThread.Post(() => _summaryTextBlock.Text = T(text));
+
+    private async void RetryFailedButton_OnClick(object? sender, RoutedEventArgs e)
+        => await RetryFailedAsync();
+
+    private async Task RetryFailedAsync()
+    {
+        var report = _lastQueueReport;
+        if (report is null)
+            return;
+
+        var selectedCount = VideoProcessingQueueRetryHelper.SelectOnlyRetryableEntries(_workspace.Entries, report);
+        RefreshSelectionSummary();
+        UpdateInteractiveState();
+
+        if (selectedCount == 0)
+        {
+            SetSummary("No failed videos from the last batch are available for retry.");
+            return;
+        }
+
+        if (string.Equals(report.Mode, "Main mode", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_runCts is null || !_serverRunner.IsRunning)
+                throw new InvalidOperationException("Start the tunnel again before retrying failed videos in Main mode.");
+
+            SetSummary(F("Retry failed selected {0} video(s).", selectedCount));
+            StartMainModeQueue();
+            return;
+        }
+
+        if (string.Equals(report.Mode, "Studio", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_translationStudioWindow is null)
+                throw new InvalidOperationException("Open Translation Studio before retrying failed Studio videos.");
+
+            if (_lastStudioBatchRequest is null)
+                throw new InvalidOperationException("The last Studio batch settings are unavailable for retry.");
+
+            SetSummary(F("Retry failed selected {0} video(s).", selectedCount));
+            await StartTranslationStudioBatchAsync(_lastStudioBatchRequest, CancellationToken.None);
+            return;
+        }
+
+        throw new InvalidOperationException("The last batch mode is not supported for retry.");
+    }
+
+    private bool CanRetryFailedLastBatch()
+    {
+        if (_isBusy || _isMainModeQueueLocked || _mainModeQueueTask is { IsCompleted: false } || _studioQueueTask is { IsCompleted: false })
+            return false;
+
+        if (_lastQueueReport is null || !_lastQueueReport.Items.Any(x => x.Status is VideoProcessingItemLifecycleStatus.Failed or VideoProcessingItemLifecycleStatus.TimedOut))
+            return false;
+
+        if (string.Equals(_lastQueueReport.Mode, "Main mode", StringComparison.OrdinalIgnoreCase))
+            return _runCts is not null && _serverRunner.IsRunning;
+
+        if (string.Equals(_lastQueueReport.Mode, "Studio", StringComparison.OrdinalIgnoreCase))
+            return _translationStudioWindow is not null && _runCts is not null && _serverRunner.IsRunning && _lastStudioBatchRequest is not null;
+
+        return false;
+    }
+
+    private void StoreLastQueueReport(VideoProcessingQueueReport report)
+    {
+        _lastQueueReport = report;
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshSelectionSummary();
+            UpdateInteractiveState();
+        });
+    }
+
+    private void ClearLastQueueState()
+    {
+        _lastQueueReport = null;
+        _lastStudioBatchRequest = null;
+        UpdateQueueProgress(null);
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshSelectionSummary();
+            UpdateInteractiveState();
+        });
+    }
+
+    private void UpdateQueueProgress(VideoProcessingQueueRunner? runner)
+    {
+        _queueProgressText = runner is null
+            ? null
+            : VideoProcessingQueueProgressHelper.BuildProgressText(
+                runner.ActiveSession,
+                (current, total) => F("Processing {0} / {1}", current, total));
+        Dispatcher.UIThread.Post(() =>
+        {
+            RefreshSelectionSummary();
+            _translationStudioWindow?.SetBatchProgressText(_queueProgressText);
+        });
+    }
+
+    private string BuildQueueStatusSummary(VideoProcessingQueueItem item)
+    {
+        var progressText = _queueProgressText;
+        var stateText = BuildQueueStateText(item);
+        return string.IsNullOrWhiteSpace(progressText)
+            ? F("Batch: {0}", stateText)
+            : F("{0} | {1}", progressText, stateText);
+    }
+
+    private string BuildQueueStateText(VideoProcessingQueueItem item)
+    {
+        var state = $"{item.Title} -> {GetQueueStatusText(item.Status)}";
+        return string.IsNullOrWhiteSpace(item.Message)
+            ? state
+            : state + " | " + T(item.Message);
+    }
+
+    private string GetQueueStatusText(VideoProcessingItemLifecycleStatus status)
+        => status switch
+        {
+            VideoProcessingItemLifecycleStatus.Pending => T("Pending"),
+            VideoProcessingItemLifecycleStatus.Skipped => T("Skipped"),
+            VideoProcessingItemLifecycleStatus.Preparing => T("Preparing"),
+            VideoProcessingItemLifecycleStatus.OpeningPlayer => T("Opening player"),
+            VideoProcessingItemLifecycleStatus.WaitingForTranslationStart => T("Waiting for translation start"),
+            VideoProcessingItemLifecycleStatus.WaitingForTranslationReady => T("Waiting for translation result"),
+            VideoProcessingItemLifecycleStatus.FinalizingOutput => T("Finalizing output"),
+            VideoProcessingItemLifecycleStatus.Completed => T("Completed"),
+            VideoProcessingItemLifecycleStatus.Failed => T("Failed"),
+            VideoProcessingItemLifecycleStatus.TimedOut => T("Timed out"),
+            VideoProcessingItemLifecycleStatus.Canceled => T("Canceled"),
+            _ => status.ToString()
+        };
 
     private void AppendLog(string message)
     {

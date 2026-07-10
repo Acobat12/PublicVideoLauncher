@@ -4,6 +4,7 @@ using Avalonia.Controls.Primitives;
 using Avalonia.Interactivity;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform.Storage;
+using Avalonia.Threading;
 using PublicVideoLauncher.Models;
 using PublicVideoLauncher.Services;
 using System;
@@ -30,10 +31,17 @@ public sealed partial class TranslationStudioWindow : Window
     private readonly Func<TranslationStudioJob, TranslationStudioSegment, double, double, CancellationToken, Task<TranslationStudioJob>> _mergeSegmentAsync;
     private readonly Func<TranslationStudioJob, double, double, CancellationToken, Task<TranslationStudioJob>> _buildFinalAsync;
     private readonly Func<TranslationStudioJob, CancellationToken, Task<TranslationStudioJob>> _saveJobAsync;
+    private readonly Func<TranslationStudioBatchRequest, CancellationToken, Task> _startBatchAsync;
+    private readonly Func<Task> _stopBatchAsync;
+    private readonly Func<Task> _retryFailedAsync;
+    private readonly Func<bool> _canRetryFailed;
+    private readonly Func<bool> _getAutoProcessNextVideoEnabled;
+    private readonly Action<bool> _setAutoProcessNextVideoEnabled;
     private readonly AppLanguage _language;
 
     private readonly ComboBox _videoComboBox;
     private readonly CheckBox _autoMergeCheckBox;
+    private readonly CheckBox _autoProcessNextVideoCheckBox;
     private readonly NumericUpDown _originalAudioVolumeNumeric;
     private readonly NumericUpDown _translatedAudioVolumeNumeric;
     private readonly CheckBox _splitLongVideoCheckBox;
@@ -47,9 +55,13 @@ public sealed partial class TranslationStudioWindow : Window
     private readonly TextBox _logTextBox;
     private readonly TextBlock _studioStatusTextBlock;
     private readonly TextBlock _operationTextBlock;
+    private readonly TextBlock _batchProgressTextBlock;
     private readonly ProgressBar _busyProgressBar;
     private readonly Button _loadJobButton;
     private readonly Button _prepareButton;
+    private readonly Button _runBatchButton;
+    private readonly Button _stopBatchButton;
+    private readonly Button _retryFailedButton;
     private readonly Button _openFullPlaylistButton;
     private readonly Button _openNextUntranslatedButton;
     private readonly Button _openPlayerButton;
@@ -59,10 +71,13 @@ public sealed partial class TranslationStudioWindow : Window
     private readonly Button _openJobFolderButton;
     private readonly Button _openMergedOutputButton;
     private readonly Button _copyUrlButton;
+    private readonly Button _closeButton;
 
     private TranslationStudioJob? _currentJob;
     private bool _refreshingJobUi;
     private bool _autoFinalBuildInProgress;
+    private bool _batchLocked;
+    private bool _suppressSelectionLoad;
 
     public TranslationStudioWindow()
         : this(
@@ -78,6 +93,12 @@ public sealed partial class TranslationStudioWindow : Window
             static (_, _, _, _, _) => throw new InvalidOperationException("Designer constructor."),
             static (_, _, _, _) => throw new InvalidOperationException("Designer constructor."),
             static (_, _) => throw new InvalidOperationException("Designer constructor."),
+            static (_, _) => Task.CompletedTask,
+            static () => Task.CompletedTask,
+            static () => Task.CompletedTask,
+            static () => false,
+            static () => false,
+            static _ => { },
             AppLanguage.English)
     {
     }
@@ -95,6 +116,12 @@ public sealed partial class TranslationStudioWindow : Window
         Func<TranslationStudioJob, TranslationStudioSegment, double, double, CancellationToken, Task<TranslationStudioJob>> mergeSegmentAsync,
         Func<TranslationStudioJob, double, double, CancellationToken, Task<TranslationStudioJob>> buildFinalAsync,
         Func<TranslationStudioJob, CancellationToken, Task<TranslationStudioJob>> saveJobAsync,
+        Func<TranslationStudioBatchRequest, CancellationToken, Task> startBatchAsync,
+        Func<Task> stopBatchAsync,
+        Func<Task> retryFailedAsync,
+        Func<bool> canRetryFailed,
+        Func<bool> getAutoProcessNextVideoEnabled,
+        Action<bool> setAutoProcessNextVideoEnabled,
         AppLanguage language)
     {
         _entries = entries;
@@ -108,12 +135,19 @@ public sealed partial class TranslationStudioWindow : Window
         _mergeSegmentAsync = mergeSegmentAsync;
         _buildFinalAsync = buildFinalAsync;
         _saveJobAsync = saveJobAsync;
+        _startBatchAsync = startBatchAsync;
+        _stopBatchAsync = stopBatchAsync;
+        _retryFailedAsync = retryFailedAsync;
+        _canRetryFailed = canRetryFailed;
+        _getAutoProcessNextVideoEnabled = getAutoProcessNextVideoEnabled;
+        _setAutoProcessNextVideoEnabled = setAutoProcessNextVideoEnabled;
         _language = language;
 
         InitializeComponent();
 
         _videoComboBox = this.FindControl<ComboBox>("VideoComboBox")!;
         _autoMergeCheckBox = this.FindControl<CheckBox>("AutoMergeCheckBox")!;
+        _autoProcessNextVideoCheckBox = this.FindControl<CheckBox>("AutoProcessNextVideoCheckBox")!;
         _originalAudioVolumeNumeric = this.FindControl<NumericUpDown>("StudioOriginalAudioVolumeNumeric")!;
         _translatedAudioVolumeNumeric = this.FindControl<NumericUpDown>("StudioTranslatedAudioVolumeNumeric")!;
         _splitLongVideoCheckBox = this.FindControl<CheckBox>("SplitLongVideoCheckBox")!;
@@ -127,9 +161,13 @@ public sealed partial class TranslationStudioWindow : Window
         _logTextBox = this.FindControl<TextBox>("LogTextBox")!;
         _studioStatusTextBlock = this.FindControl<TextBlock>("StudioStatusTextBlock")!;
         _operationTextBlock = this.FindControl<TextBlock>("OperationTextBlock")!;
+        _batchProgressTextBlock = this.FindControl<TextBlock>("BatchProgressTextBlock")!;
         _busyProgressBar = this.FindControl<ProgressBar>("BusyProgressBar")!;
         _loadJobButton = this.FindControl<Button>("LoadJobButton")!;
         _prepareButton = this.FindControl<Button>("PrepareButton")!;
+        _runBatchButton = this.FindControl<Button>("RunBatchButton")!;
+        _stopBatchButton = this.FindControl<Button>("StopBatchButton")!;
+        _retryFailedButton = this.FindControl<Button>("RetryFailedButton")!;
         _openFullPlaylistButton = this.FindControl<Button>("OpenFullPlaylistButton")!;
         _openNextUntranslatedButton = this.FindControl<Button>("OpenNextUntranslatedButton")!;
         _openPlayerButton = this.FindControl<Button>("OpenPlayerButton")!;
@@ -139,13 +177,15 @@ public sealed partial class TranslationStudioWindow : Window
         _openJobFolderButton = this.FindControl<Button>("OpenJobFolderButton")!;
         _openMergedOutputButton = this.FindControl<Button>("OpenMergedOutputButton")!;
         _copyUrlButton = this.FindControl<Button>("CopyUrlButton")!;
-        var closeButton = this.FindControl<Button>("CloseButton")!;
+        _closeButton = this.FindControl<Button>("CloseButton")!;
 
         _videoComboBox.ItemsSource = _entries.Select(x => x.Title).ToArray();
         _videoComboBox.SelectedIndex = Math.Max(0, selectedEntry is null ? 0 : _entries.ToList().FindIndex(x => x.Id == selectedEntry.Id));
+        _autoProcessNextVideoCheckBox.IsChecked = _getAutoProcessNextVideoEnabled();
 
         _videoComboBox.SelectionChanged += VideoComboBox_OnSelectionChanged;
         _autoMergeCheckBox.PropertyChanged += OptionControl_OnPropertyChanged;
+        _autoProcessNextVideoCheckBox.PropertyChanged += OptionControl_OnPropertyChanged;
         _originalAudioVolumeNumeric.PropertyChanged += OptionControl_OnPropertyChanged;
         _translatedAudioVolumeNumeric.PropertyChanged += OptionControl_OnPropertyChanged;
         _splitLongVideoCheckBox.PropertyChanged += OptionControl_OnPropertyChanged;
@@ -159,6 +199,9 @@ public sealed partial class TranslationStudioWindow : Window
 
         _loadJobButton.Click += LoadJobButton_OnClick;
         _prepareButton.Click += PrepareButton_OnClick;
+        _runBatchButton.Click += RunBatchButton_OnClick;
+        _stopBatchButton.Click += StopBatchButton_OnClick;
+        _retryFailedButton.Click += RetryFailedButton_OnClick;
         _openFullPlaylistButton.Click += OpenFullPlaylistButton_OnClick;
         _openNextUntranslatedButton.Click += OpenNextUntranslatedButton_OnClick;
         _openPlayerButton.Click += OpenPlayerButton_OnClick;
@@ -168,7 +211,8 @@ public sealed partial class TranslationStudioWindow : Window
         _openJobFolderButton.Click += OpenJobFolderButton_OnClick;
         _openMergedOutputButton.Click += OpenMergedOutputButton_OnClick;
         _copyUrlButton.Click += CopyUrlButton_OnClick;
-        closeButton.Click += (_, _) => Close();
+        _closeButton.Click += (_, _) => Close();
+        Closing += TranslationStudioWindow_OnClosing;
 
         RefreshJobUi();
         Opened += async (_, _) => await TryLoadExistingJobForSelectedEntryAsync(true);
@@ -187,6 +231,9 @@ public sealed partial class TranslationStudioWindow : Window
 
     private async void VideoComboBox_OnSelectionChanged(object? sender, SelectionChangedEventArgs e)
     {
+        if (_suppressSelectionLoad)
+            return;
+
         await TryLoadExistingJobForSelectedEntryAsync(false);
     }
 
@@ -207,6 +254,11 @@ public sealed partial class TranslationStudioWindow : Window
             {
                 _ = SaveCurrentJobSettingsAsync();
             }
+        }
+
+        if (e.Property == ToggleButton.IsCheckedProperty && sender == _autoProcessNextVideoCheckBox)
+        {
+            _setAutoProcessNextVideoEnabled(_autoProcessNextVideoCheckBox.IsChecked == true);
         }
 
         if (e.Property == NumericUpDown.ValueProperty && _currentJob is not null)
@@ -260,6 +312,70 @@ public sealed partial class TranslationStudioWindow : Window
         {
             SetBusy(false);
         }
+    }
+
+    private async void RunBatchButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            SetBusy(true, "Starting Studio batch...");
+            await _startBatchAsync(BuildBatchRequest(), CancellationToken.None);
+            AppendLog("Studio batch started.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog(F("Run batch failed: {0}", ex.Message));
+        }
+        finally
+        {
+            SetBusy(false);
+            if (_batchLocked)
+                SetStudioStatus("Batch started", "Studio batch is processing selected videos sequentially.");
+        }
+    }
+
+    private async void StopBatchButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _stopBatchAsync();
+            AppendLog("Studio batch stop requested.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog(F("Stop batch failed: {0}", ex.Message));
+        }
+    }
+
+    private async void RetryFailedButton_OnClick(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            SetBusy(true, "Preparing retry for failed videos...");
+            await _retryFailedAsync();
+            AppendLog("Retry failed batch started.");
+        }
+        catch (Exception ex)
+        {
+            AppendLog(F("Retry failed batch could not start: {0}", ex.Message));
+        }
+        finally
+        {
+            SetBusy(false);
+            if (_batchLocked)
+                SetStudioStatus("Batch started", "Studio batch is processing selected videos sequentially.");
+        }
+    }
+
+    private void TranslationStudioWindow_OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        if (!_batchLocked)
+            return;
+
+        e.Cancel = true;
+        _ = _stopBatchAsync();
+        SetStudioStatus("Working", "Stopping Studio batch. Close the window after the current video finishes.");
+        AppendLog("Studio batch stop requested before closing the window.");
     }
 
     private async void OpenFullPlaylistButton_OnClick(object? sender, RoutedEventArgs e)
@@ -690,6 +806,128 @@ public sealed partial class TranslationStudioWindow : Window
         }
     }
 
+    private TranslationStudioBatchRequest BuildBatchRequest()
+    {
+        return new TranslationStudioBatchRequest
+        {
+            SplitLongVideo = _splitLongVideoCheckBox.IsChecked == true,
+            SplitIfLongerThanMinutes = (int)Math.Round(_splitThresholdNumeric.Value ?? 120),
+            TargetSegmentMinutes = (int)Math.Round(_targetSegmentNumeric.Value ?? 60),
+            OriginalAudioVolumePercent = GetOriginalAudioVolumePercent(),
+            TranslatedAudioVolumePercent = GetTranslatedAudioVolumePercent()
+        };
+    }
+
+    public async Task SelectEntryForBatchAsync(VideoEntry entry, CancellationToken cancellationToken)
+    {
+        var targetIndex = _entries
+            .Select((item, index) => new { item, index })
+            .FirstOrDefault(x => string.Equals(x.item.Id, entry.Id, StringComparison.OrdinalIgnoreCase))
+            ?.index ?? -1;
+
+        if (targetIndex < 0)
+            return;
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _suppressSelectionLoad = true;
+            try
+            {
+                _videoComboBox.SelectedIndex = targetIndex;
+                _currentJob = null;
+                RefreshJobUi();
+                SetStudioStatus("Batch selected video", F("Studio batch selected: {0}", entry.Title));
+            }
+            finally
+            {
+                _suppressSelectionLoad = false;
+            }
+        }, Avalonia.Threading.DispatcherPriority.Normal, cancellationToken);
+    }
+
+    public async Task DisplayBatchPreparedJobAsync(
+        TranslationStudioJob job,
+        TranslationStudioSegment? openedSegment,
+        string title,
+        string details,
+        CancellationToken cancellationToken)
+    {
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            _currentJob = job;
+            RefreshJobUi();
+            if (openedSegment is not null)
+            {
+                var segmentIndex = Math.Max(0, job.Segments.FindIndex(x => string.Equals(x.SegmentId, openedSegment.SegmentId, StringComparison.OrdinalIgnoreCase)));
+                _segmentsListBox.SelectedIndex = segmentIndex;
+            }
+
+            SetStudioStatus(title, details);
+            RefreshDisplayedPlayerUrl();
+        }, Avalonia.Threading.DispatcherPriority.Normal, cancellationToken);
+    }
+
+    public void SetBatchLocked(bool locked)
+    {
+        _batchLocked = locked;
+        Dispatcher.UIThread.Post(RefreshButtons);
+    }
+
+    public void SetBatchProgressText(string? progressText)
+    {
+        Dispatcher.UIThread.Post(() =>
+        {
+            _batchProgressTextBlock.Text = string.IsNullOrWhiteSpace(progressText) ? string.Empty : progressText;
+            _batchProgressTextBlock.IsVisible = !string.IsNullOrWhiteSpace(progressText);
+        });
+    }
+
+    public async Task ShowBatchReportAsync(string reportText, CancellationToken cancellationToken)
+    {
+        var dialogTask = await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            var textBox = new TextBox
+            {
+                Text = reportText,
+                IsReadOnly = true,
+                AcceptsReturn = true,
+                TextWrapping = Avalonia.Media.TextWrapping.Wrap,
+                Background = Avalonia.Media.Brush.Parse("#020817"),
+                Margin = new Avalonia.Thickness(0, 0, 0, 12),
+                MinHeight = 180
+            };
+
+            var okButton = new Button
+            {
+                Content = T("OK"),
+                Width = 100,
+                HorizontalAlignment = Avalonia.Layout.HorizontalAlignment.Right
+            };
+
+            var layout = new DockPanel { Margin = new Avalonia.Thickness(16) };
+            DockPanel.SetDock(okButton, Dock.Bottom);
+            layout.Children.Add(okButton);
+            layout.Children.Add(textBox);
+
+            var dialog = new Window
+            {
+                Title = T("Translation Studio"),
+                Width = 620,
+                Height = 360,
+                MinWidth = 520,
+                MinHeight = 280,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Background = Avalonia.Media.Brush.Parse("#0B1220"),
+                Content = layout
+            };
+
+            okButton.Click += (_, _) => dialog.Close();
+            return dialog.ShowDialog(this);
+        }, Avalonia.Threading.DispatcherPriority.Normal, cancellationToken);
+
+        await dialogTask;
+    }
+
     private VideoEntry? GetSelectedEntry()
     {
         var index = _videoComboBox.SelectedIndex;
@@ -759,16 +997,32 @@ public sealed partial class TranslationStudioWindow : Window
         var hasSegment = selectedSegment is not null;
         var hasNextUntranslated = GetNextUntranslatedSegment() is not null;
         var hasSegmentAudio = selectedSegment?.HasTranslatedAudio == true;
+        var manualEnabled = !_batchLocked;
 
-        _openFullPlaylistButton.IsEnabled = hasJob;
-        _openNextUntranslatedButton.IsEnabled = hasJob && hasNextUntranslated;
-        _openPlayerButton.IsEnabled = hasJob && hasSegment;
-        _importAudioButton.IsEnabled = hasJob && hasSegment;
-        _mergeSegmentButton.IsEnabled = hasJob && hasSegment && hasSegmentAudio;
-        _buildFinalButton.IsEnabled = hasJob;
-        _openJobFolderButton.IsEnabled = hasJob;
-        _openMergedOutputButton.IsEnabled = _currentJob?.HasFinalOutput == true;
-        _copyUrlButton.IsEnabled = !string.IsNullOrWhiteSpace(_playerUrlTextBox.Text);
+        _loadJobButton.IsEnabled = manualEnabled;
+        _prepareButton.IsEnabled = manualEnabled;
+        _runBatchButton.IsEnabled = manualEnabled && _autoProcessNextVideoCheckBox.IsChecked == true;
+        _stopBatchButton.IsEnabled = _batchLocked;
+        _retryFailedButton.IsEnabled = manualEnabled && _canRetryFailed();
+        _openFullPlaylistButton.IsEnabled = manualEnabled && hasJob;
+        _openNextUntranslatedButton.IsEnabled = manualEnabled && hasJob && hasNextUntranslated;
+        _openPlayerButton.IsEnabled = manualEnabled && hasJob && hasSegment;
+        _importAudioButton.IsEnabled = manualEnabled && hasJob && hasSegment;
+        _mergeSegmentButton.IsEnabled = manualEnabled && hasJob && hasSegment && hasSegmentAudio;
+        _buildFinalButton.IsEnabled = manualEnabled && hasJob;
+        _openJobFolderButton.IsEnabled = manualEnabled && hasJob;
+        _openMergedOutputButton.IsEnabled = manualEnabled && _currentJob?.HasFinalOutput == true;
+        _copyUrlButton.IsEnabled = manualEnabled && !string.IsNullOrWhiteSpace(_playerUrlTextBox.Text);
+        _videoComboBox.IsEnabled = manualEnabled;
+        _autoMergeCheckBox.IsEnabled = manualEnabled;
+        _autoProcessNextVideoCheckBox.IsEnabled = manualEnabled;
+        _originalAudioVolumeNumeric.IsEnabled = manualEnabled;
+        _translatedAudioVolumeNumeric.IsEnabled = manualEnabled;
+        _splitLongVideoCheckBox.IsEnabled = manualEnabled;
+        _splitThresholdNumeric.IsEnabled = manualEnabled;
+        _targetSegmentNumeric.IsEnabled = manualEnabled;
+        _segmentsListBox.IsEnabled = manualEnabled;
+        _closeButton.IsEnabled = manualEnabled;
         RefreshActionHints();
     }
 
@@ -776,26 +1030,32 @@ public sealed partial class TranslationStudioWindow : Window
     {
         var selectedSegment = GetSelectedSegment();
         var hasSegmentAudio = selectedSegment?.HasTranslatedAudio == true;
+        var manualEnabled = !busy && !_batchLocked;
 
-        _loadJobButton.IsEnabled = !busy;
-        _prepareButton.IsEnabled = !busy;
-        _openFullPlaylistButton.IsEnabled = !busy && _currentJob is not null;
-        _openNextUntranslatedButton.IsEnabled = !busy && _currentJob is not null && GetNextUntranslatedSegment() is not null;
-        _openPlayerButton.IsEnabled = !busy && _currentJob is not null && selectedSegment is not null;
-        _importAudioButton.IsEnabled = !busy && _currentJob is not null && selectedSegment is not null;
-        _mergeSegmentButton.IsEnabled = !busy && _currentJob is not null && selectedSegment is not null && hasSegmentAudio;
-        _buildFinalButton.IsEnabled = !busy && _currentJob is not null;
-        _openJobFolderButton.IsEnabled = !busy && _currentJob is not null;
-        _openMergedOutputButton.IsEnabled = !busy && _currentJob?.HasFinalOutput == true;
-        _copyUrlButton.IsEnabled = !busy && !string.IsNullOrWhiteSpace(_playerUrlTextBox.Text);
-        _videoComboBox.IsEnabled = !busy;
-        _autoMergeCheckBox.IsEnabled = !busy;
-        _originalAudioVolumeNumeric.IsEnabled = !busy;
-        _translatedAudioVolumeNumeric.IsEnabled = !busy;
-        _splitLongVideoCheckBox.IsEnabled = !busy;
-        _splitThresholdNumeric.IsEnabled = !busy;
-        _targetSegmentNumeric.IsEnabled = !busy;
-        _segmentsListBox.IsEnabled = !busy;
+        _loadJobButton.IsEnabled = manualEnabled;
+        _prepareButton.IsEnabled = manualEnabled;
+        _runBatchButton.IsEnabled = manualEnabled && _autoProcessNextVideoCheckBox.IsChecked == true;
+        _stopBatchButton.IsEnabled = _batchLocked;
+        _retryFailedButton.IsEnabled = manualEnabled && _canRetryFailed();
+        _openFullPlaylistButton.IsEnabled = manualEnabled && _currentJob is not null;
+        _openNextUntranslatedButton.IsEnabled = manualEnabled && _currentJob is not null && GetNextUntranslatedSegment() is not null;
+        _openPlayerButton.IsEnabled = manualEnabled && _currentJob is not null && selectedSegment is not null;
+        _importAudioButton.IsEnabled = manualEnabled && _currentJob is not null && selectedSegment is not null;
+        _mergeSegmentButton.IsEnabled = manualEnabled && _currentJob is not null && selectedSegment is not null && hasSegmentAudio;
+        _buildFinalButton.IsEnabled = manualEnabled && _currentJob is not null;
+        _openJobFolderButton.IsEnabled = manualEnabled && _currentJob is not null;
+        _openMergedOutputButton.IsEnabled = manualEnabled && _currentJob?.HasFinalOutput == true;
+        _copyUrlButton.IsEnabled = manualEnabled && !string.IsNullOrWhiteSpace(_playerUrlTextBox.Text);
+        _videoComboBox.IsEnabled = manualEnabled;
+        _autoMergeCheckBox.IsEnabled = manualEnabled;
+        _autoProcessNextVideoCheckBox.IsEnabled = manualEnabled;
+        _originalAudioVolumeNumeric.IsEnabled = manualEnabled;
+        _translatedAudioVolumeNumeric.IsEnabled = manualEnabled;
+        _splitLongVideoCheckBox.IsEnabled = manualEnabled;
+        _splitThresholdNumeric.IsEnabled = manualEnabled;
+        _targetSegmentNumeric.IsEnabled = manualEnabled;
+        _segmentsListBox.IsEnabled = manualEnabled;
+        _closeButton.IsEnabled = manualEnabled;
         _busyProgressBar.IsVisible = busy;
 
         if (busy)

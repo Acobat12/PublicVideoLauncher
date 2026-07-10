@@ -136,12 +136,19 @@
           </StackPanel>
         </Border>
 
-        <TextBlock x:Name="OperationTextBlock"
-                   Grid.Row="1"
-                   Grid.Column="0"
-                   Grid.ColumnSpan="2"
-                   Text="Ready to prepare."
-                   Foreground="#93C5FD"/>
+        <StackPanel Grid.Row="1"
+                    Grid.Column="0"
+                    Grid.ColumnSpan="2"
+                    Spacing="4">
+          <TextBlock x:Name="OperationTextBlock"
+                     Text="Ready to prepare."
+                     Foreground="#93C5FD"/>
+          <TextBlock x:Name="BatchProgressTextBlock"
+                     Text=""
+                     Foreground="#86EFAC"
+                     FontWeight="SemiBold"
+                     IsVisible="False"/>
+        </StackPanel>
 
         <ProgressBar x:Name="BusyProgressBar"
                      Grid.Row="2"
@@ -177,12 +184,15 @@
             <TextBlock Text="Options" FontWeight="SemiBold" VerticalAlignment="Center"/>
             <Button Classes="help" Content="?" Tag="Options" Click="HelpButton_OnClick"/>
           </StackPanel>
-          <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="Auto,Auto" RowSpacing="8">
+          <Grid Grid.Row="1" Grid.Column="1" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
             <CheckBox x:Name="AutoMergeCheckBox"
                       Grid.Row="0"
                       IsChecked="True"
                       Content="Auto build final video after translated mp3 is downloaded"/>
-            <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+            <CheckBox x:Name="AutoProcessNextVideoCheckBox"
+                      Grid.Row="1"
+                      Content="Auto process next video"/>
+            <StackPanel Grid.Row="2" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
               <TextBlock Text="Original %" FontWeight="SemiBold" VerticalAlignment="Center"/>
               <NumericUpDown x:Name="StudioOriginalAudioVolumeNumeric"
                              Width="111"
@@ -327,6 +337,9 @@
       <WrapPanel Orientation="Horizontal" HorizontalAlignment="Left">
         <Button x:Name="LoadJobButton" Content="Load job" Margin="0,0,8,8"/>
         <Button x:Name="PrepareButton" Content="Prepare" Classes="primary" Margin="0,0,8,8"/>
+        <Button x:Name="RunBatchButton" Content="Run batch" Classes="primary" Margin="0,0,8,8"/>
+        <Button x:Name="StopBatchButton" Content="Stop batch" Margin="0,0,8,8"/>
+        <Button x:Name="RetryFailedButton" Content="Retry failed" Margin="0,0,8,8"/>
         <Button x:Name="OpenFullPlaylistButton" Content="Playlist" Classes="blue" Margin="0,0,8,8"/>
         <Button x:Name="OpenNextUntranslatedButton" Content="Next" Margin="0,0,8,8"/>
         <Button x:Name="OpenPlayerButton" Content="Segment" Classes="blue" Margin="0,0,8,8" IsVisible="False"/>

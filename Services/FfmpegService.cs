@@ -409,14 +409,16 @@ public sealed class FfmpegService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (entry.IsDirectMp4)
-            {
-                entry.CacheState = "Not needed";
-                continue;
-            }
-
             if (string.IsNullOrWhiteSpace(entry.PlaybackCachePath))
+            {
+                if (string.IsNullOrWhiteSpace(entry.TranslationCachePath))
+                {
+                    entry.CacheState = "Not needed";
+                    continue;
+                }
+
                 throw new InvalidOperationException($"Playback cache path is missing for {entry.FileName}");
+            }
 
             if (NeedsRebuild(entry.FullPath, entry.PlaybackCachePath))
             {
